@@ -30,16 +30,10 @@ import com.google.googlejavaformat.Newlines
 import com.google.googlejavaformat.OpsBuilder
 import com.google.googlejavaformat.java.FormatterException
 import com.google.googlejavaformat.java.JavaOutput
+import fleet.org.jetbrains.kotlin.kmp.lexer.KtTokens
+import fleet.org.jetbrains.kotlin.kmp.parser.KtNodeTypes
 import org.jetbrains.kotlin.com.intellij.openapi.util.text.StringUtil
 import org.jetbrains.kotlin.com.intellij.openapi.util.text.StringUtilRt.convertLineSeparators
-import org.jetbrains.kotlin.com.intellij.psi.PsiComment
-import org.jetbrains.kotlin.com.intellij.psi.PsiElement
-import org.jetbrains.kotlin.com.intellij.psi.PsiElementVisitor
-import org.jetbrains.kotlin.com.intellij.psi.PsiWhiteSpace
-import org.jetbrains.kotlin.psi.KtFile
-import org.jetbrains.kotlin.psi.KtImportDirective
-import org.jetbrains.kotlin.psi.psiUtil.endOffset
-import org.jetbrains.kotlin.psi.psiUtil.startOffset
 
 object Formatter {
 
@@ -66,8 +60,6 @@ object Formatter {
           continuationIndent = 4,
       )
 
-  private val MINIMUM_KOTLIN_VERSION = KotlinVersion(1, 4)
-
   /**
    * format formats the Kotlin code given in 'code' and returns it as a string. This method is
    * accessed through Reflection.
@@ -93,32 +85,39 @@ object Formatter {
   fun format(options: FormattingOptions, code: String): String {
     val (shebang, kotlinCode) =
         if (code.startsWith("#!")) {
-          code.split("\n".toRegex(), limit = 2)
+          code.split("\n", limit = 2)
         } else {
           listOf("", code)
         }
     checkEscapeSequences(kotlinCode)
 
-    return FormatterContext(convertLineSeparators(kotlinCode))
-        .transform { sortedAndDistinctImports(it) }
-        .transform { dropRedundantElements(it, options) }
-        .transform { addRedundantElements(it, options) }
-        .transform { prettyPrint(it, options, lineSeparator = "\n") }
-        .transform { addRedundantElements(it, options) }
-        .transform { MultilineStringFormatter(options.continuationIndent).format(it) }
+    val context = FormatterContext(convertLineSeparators(kotlinCode))
+    checkParseError(context.code, context.tree)
+
+    return context
+        .transform { code, tree -> sortedAndDistinctImports(code, tree) }
+        .transform { code, tree -> dropRedundantElements(code, options, tree) }
+        .transform { code, tree -> addRedundantElements(code, options, tree) }
+        .transform { code, tree -> prettyPrint(code, tree, options, lineSeparator = "\n") }
+        .transform { code, tree -> addRedundantElements(code, options, tree) }
+        .transform { code, _ -> MultilineStringFormatter(options.continuationIndent).format(code) }
         .code
         .let { convertLineSeparators(it, checkNotNull(Newlines.guessLineSeparator(kotlinCode))) }
         .let { if (shebang.isEmpty()) it else shebang + "\n" + it }
   }
 
   /** prettyPrint reflows 'code' using google-java-format's engine. */
-  private fun prettyPrint(file: KtFile, options: FormattingOptions, lineSeparator: String): String {
-    val code = file.text
-    val kotlinInput = KotlinInput(code, file)
+  private fun prettyPrint(
+      code: String,
+      tree: KmpNode,
+      options: FormattingOptions,
+      lineSeparator: String,
+  ): String {
+    val kotlinInput = KotlinInput.fromKmp(code, tree)
     val javaOutput =
         JavaOutput(lineSeparator, kotlinInput, KDocCommentsHelper(lineSeparator, options.maxWidth))
     val builder = OpsBuilder(kotlinInput, javaOutput)
-    file.accept(createAstVisitor(options, builder))
+    KmpAstVisitor(options, builder, code).visitFile(tree)
     builder.sync(kotlinInput.text.length)
     builder.drain()
     val ops = builder.build()
@@ -137,13 +136,6 @@ object Formatter {
     )
   }
 
-  private fun createAstVisitor(options: FormattingOptions, builder: OpsBuilder): PsiElementVisitor {
-    if (KotlinVersion.CURRENT < MINIMUM_KOTLIN_VERSION) {
-      throw RuntimeException("Unsupported runtime Kotlin version: " + KotlinVersion.CURRENT)
-    }
-    return KotlinInputAstVisitor(options, builder)
-  }
-
   private fun checkEscapeSequences(code: String) {
     var index = code.indexOfWhitespaceTombstone()
     if (index == -1) {
@@ -158,37 +150,61 @@ object Formatter {
     }
   }
 
-  private fun sortedAndDistinctImports(file: KtFile): String {
-    val code = file.text
+  /**
+   * Detects syntax errors using the lightweight multiplatform parser and reports the first one as a
+   * [ParseError], mirroring what the old PSI `Parser.parse` did (script grammar, first error in
+   * document order, 0-based line/column).
+   */
+  private fun checkParseError(code: String, tree: KmpNode) {
+    val error = tree.firstErrorOrNull() ?: return
+    throw ParseError(
+        error.errorMessage ?: "Syntax error",
+        StringUtil.offsetToLineColumn(code, error.startOffset),
+    )
+  }
 
-    val importList = file.importList ?: return code
-    if (importList.imports.isEmpty()) {
+  private fun sortedAndDistinctImports(code: String, tree: KmpNode): String {
+    // Consume the new multiplatform parser's lightweight syntax tree instead of PSI.
+    val importList =
+        tree.children().firstOrNull { it.type == KtNodeTypes.IMPORT_LIST } ?: return code
+    val imports = importList.children().filter { it.type == KtNodeTypes.IMPORT_DIRECTIVE }.toList()
+    if (imports.isEmpty()) {
       return code
     }
 
-    val commentList = mutableListOf<PsiElement>()
+    val commentList = mutableListOf<KmpNode>()
     // Find non-import elements; comments are moved, in order, to the top of the import list. Other
     // non-import elements throw a ParseError.
-    var element = importList.firstChild
-    while (element != null) {
-      if (element is PsiComment) {
-        commentList.add(element)
-      } else if (element !is KtImportDirective && element !is PsiWhiteSpace) {
-        throw ParseError(
-            "Imports not contiguous: " + element.text,
-            StringUtil.offsetToLineColumn(code, element.startOffset),
-        )
+    for (element in importList.children()) {
+      when {
+        element.type == KtTokens.EOL_COMMENT || element.type == KtTokens.BLOCK_COMMENT ->
+            commentList.add(element)
+        element.type == KtNodeTypes.IMPORT_DIRECTIVE || element.type in KtTokens.WHITESPACES -> {}
+        else ->
+            throw ParseError(
+                "Imports not contiguous: " + element.text,
+                StringUtil.offsetToLineColumn(code, element.startOffset),
+            )
       }
-      element = element.nextSibling
     }
-    fun canonicalText(importDirective: KtImportDirective) =
-        importDirective.importedFqName?.asString() +
-            " " +
-            importDirective.alias?.text?.replace("`", "") +
-            " " +
-            if (importDirective.isAllUnder) "*" else ""
+    fun canonicalText(importDirective: KmpNode): String {
+      val parts = importDirective.children().toList()
+      val fqName =
+          parts
+              .firstOrNull {
+                it.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
+                    it.type == KtNodeTypes.REFERENCE_EXPRESSION
+              }
+              ?.text
+              ?.toString()
+              ?.replace("`", "")
+      val alias =
+          parts.firstOrNull { it.type == KtNodeTypes.IMPORT_ALIAS }?.text?.toString()?.replace("`", "")
+      val isAllUnder = parts.any { it.type == KtTokens.MUL }
+      return fqName + " " + alias + " " + if (isAllUnder) "*" else ""
+    }
 
-    val sortedImports = importList.imports.sortedBy(::canonicalText).distinctBy(::canonicalText)
+    val sortedImports = imports.sortedBy(::canonicalText).distinctBy(::canonicalText)
     val importsWithComments = commentList + sortedImports
 
     val body = importsWithComments.joinToString(separator = "\n") { imprt -> imprt.text }

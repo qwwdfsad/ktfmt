@@ -17,13 +17,9 @@
 package com.facebook.ktfmt.format
 
 import com.google.common.annotations.VisibleForTesting
-import org.jetbrains.kotlin.com.intellij.psi.PsiComment
+import fleet.org.jetbrains.kotlin.kmp.lexer.KtTokens
+import fleet.org.jetbrains.kotlin.kmp.parser.KtNodeTypes
 import org.jetbrains.kotlin.psi.KtFile
-import org.jetbrains.kotlin.psi.KtQualifiedExpression
-import org.jetbrains.kotlin.psi.KtStringTemplateExpression
-import org.jetbrains.kotlin.psi.KtTreeVisitorVoid
-import org.jetbrains.kotlin.psi.psiUtil.getParentOfType
-import org.jetbrains.kotlin.psi.psiUtil.startOffset
 
 private const val TQ = "\"\"\""
 
@@ -32,13 +28,21 @@ private const val TQ = "\"\"\""
  * imports.
  */
 class MultilineStringFormatter(val continuationIndentSize: Int) {
-  fun format(code: String): String = format(Parser.parse(code))
+  fun format(code: String): String = formatCode(code)
 
-  internal fun format(file: KtFile): String {
-    val code = file.text
+  internal fun format(file: KtFile): String = formatCode(file.text)
+
+  private fun formatCode(code: String): String {
+    // Fast path: this step only rewrites multiline strings (`"""`) that are followed by a
+    // trimIndent()/trimMargin() call. If the code contains no triple-quotes, or no trim call at
+    // all, there is nothing to format and we can skip parsing/traversal entirely. The string scans
+    // below are far cheaper than walking the whole tree.
+    if (TQ !in code || (!code.contains("trimIndent") && !code.contains("trimMargin"))) {
+      return code
+    }
     val result = StringBuilder(code)
     val multilineStringList =
-        getMultilineTrimmedStringList(file)
+        getMultilineTrimmedStringList(code)
             .sortedByDescending(MultilineTrimmedString::openStringOffset)
     for (multilineString in multilineStringList) {
       if (multilineString.stringLineCount < 2) {
@@ -107,63 +111,72 @@ class MultilineStringFormatter(val continuationIndentSize: Int) {
     return result.toString()
   }
 
+  /**
+   * Finds every `"""...""".trimIndent()` / `.trimMargin()` call in [code] and returns a description
+   * of each.
+   *
+   * This consumes the new multiplatform Kotlin parser's lightweight syntax tree ([KmpAst]) rather
+   * than PSI. A qualified expression `receiver.selector` is matched when its receiver is a string
+   * template and its selector is a no-argument `trimIndent()`/`trimMargin()` call.
+   */
   @VisibleForTesting
-  internal fun getMultilineTrimmedStringList(code: String): List<MultilineTrimmedString> =
-      getMultilineTrimmedStringList(Parser.parse(code))
-
-  internal fun getMultilineTrimmedStringList(file: KtFile): List<MultilineTrimmedString> {
-    val code = file.text
+  internal fun getMultilineTrimmedStringList(code: String): List<MultilineTrimmedString> {
     val strings = mutableListOf<MultilineTrimmedString>()
-    file.accept(
-        object : KtTreeVisitorVoid() {
-          override fun visitQualifiedExpression(expression: KtQualifiedExpression) {
-            super.visitQualifiedExpression(expression)
-            val receiver = expression.receiverExpression
-            if (receiver !is KtStringTemplateExpression) return
-            val isDollarString = receiver.text.startsWith("$$")
-            val selectorExpression = expression.selectorExpression?.text.orEmpty().trim()
-            val isTrimMargin = selectorExpression.startsWith("trimMargin()")
-            val isTrimIndent = selectorExpression.startsWith("trimIndent()")
-            if (isTrimIndent || isTrimMargin) {
-              // -1 here to account for the space after the dot
-              val trimOffset = checkNotNull(expression.selectorExpression).startOffset - 1
-              val stringOffset = receiver.startOffset
-              val lineStart = code.substring(0, stringOffset).lines().lastIndex
-              val lineEnd = code.substring(0, trimOffset).lines().lastIndex
-              val indentCount =
-                  code.substring(0, stringOffset).lines().last().substringBefore(TQ).let {
-                    it.length - it.trimStart().length
-                  }
-              // Collect comments between the closing """ and the .trimX() call
-              val comments = mutableListOf<String>()
-              var child = receiver.nextSibling
-              while (child != null && child !== expression.selectorExpression) {
-                if (child is PsiComment) {
-                  comments.add(child.text)
-                }
-                child = child.nextSibling
-              }
-              strings.add(
-                  MultilineTrimmedString(
-                      usesTrimMargin = isTrimMargin,
-                      isDollarString = isDollarString,
-                      indentCount = indentCount,
-                      lines = code.lines().subList(lineStart, lineEnd + 1),
-                      lineStart = lineStart,
-                      lineEnd = lineEnd,
-                      openStringOffset = stringOffset,
-                      trimMethodCallOffset = trimOffset,
-                      isNestedMultiline =
-                          expression.getParentOfType<KtStringTemplateExpression>(strict = false) !=
-                              null,
-                      commentsBetweenStringAndTrimCall = comments,
-                  )
-              )
-            }
+    for (node in KmpAst.parse(code).descendants()) {
+      if (node.type != KtNodeTypes.DOT_QUALIFIED_EXPRESSION &&
+          node.type != KtNodeTypes.SAFE_ACCESS_EXPRESSION) {
+        continue
+      }
+      val childList = node.children().toList()
+      // First/last meaningful (non-whitespace, non-comment) children are the receiver and selector.
+      val receiver =
+          childList.firstOrNull { it.type !in KtTokens.WHITESPACES && it.type !in KtTokens.COMMENTS }
+              ?: continue
+      if (receiver.type != KtNodeTypes.STRING_TEMPLATE) continue
+      val selector =
+          childList.lastOrNull { it.type !in KtTokens.WHITESPACES && it.type !in KtTokens.COMMENTS }
+              ?: continue
+
+      val selectorText = selector.text.toString().trim()
+      val isTrimMargin = selectorText.startsWith("trimMargin()")
+      val isTrimIndent = selectorText.startsWith("trimIndent()")
+      if (!isTrimMargin && !isTrimIndent) continue
+
+      val isDollarString = receiver.text.startsWith("$$")
+      // -1 here to account for the dot before the selector
+      val trimOffset = selector.startOffset - 1
+      val stringOffset = receiver.startOffset
+      val lineStart = code.substring(0, stringOffset).lines().lastIndex
+      val lineEnd = code.substring(0, trimOffset).lines().lastIndex
+      val indentCount =
+          code.substring(0, stringOffset).lines().last().substringBefore(TQ).let {
+            it.length - it.trimStart().length
           }
-        }
-    )
-    return strings.toList()
+      // Collect comments between the closing """ (receiver) and the .trimX() call (selector).
+      val receiverIndex = childList.indexOf(receiver)
+      val selectorIndex = childList.indexOf(selector)
+      val comments =
+          childList
+              .subList(receiverIndex + 1, selectorIndex)
+              .filter { it.type == KtTokens.EOL_COMMENT || it.type == KtTokens.BLOCK_COMMENT }
+              .map { it.text.toString() }
+
+      strings.add(
+          MultilineTrimmedString(
+              usesTrimMargin = isTrimMargin,
+              isDollarString = isDollarString,
+              indentCount = indentCount,
+              lines = code.lines().subList(lineStart, lineEnd + 1),
+              lineStart = lineStart,
+              lineEnd = lineEnd,
+              openStringOffset = stringOffset,
+              trimMethodCallOffset = trimOffset,
+              isNestedMultiline = node.hasAncestorOfType(KtNodeTypes.STRING_TEMPLATE),
+              commentsBetweenStringAndTrimCall = comments,
+          )
+      )
+    }
+    return strings
   }
 }
 

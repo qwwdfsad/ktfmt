@@ -16,16 +16,24 @@
 
 package com.facebook.ktfmt.format
 
-import org.jetbrains.kotlin.psi.KtFile
 
+/**
+ * Carries the source through the formatting pipeline. Each pass consumes plain source text and the
+ * lightweight multiplatform syntax tree ([KmpAst]) for that text, and returns new text.
+ *
+ * The tree is parsed once per distinct source and reused by every pass that does not change the
+ * code: when a pass returns its input unchanged, [transform] keeps the same context (and the same
+ * already-parsed tree) instead of re-parsing. This avoids redundant parses on the happy path (e.g.
+ * already-formatted files, where most passes are no-ops). The heavy IntelliJ PSI parser is never
+ * touched on the format path.
+ */
 internal class FormatterContext(@JvmField val code: String) {
 
-  private var _ktFile: KtFile? = null
-  private val ktFile: KtFile
-    get() = _ktFile ?: Parser.parse(code).also { _ktFile = it }
+  /** The kmp syntax tree for [code], parsed once and shared across passes that don't change it. */
+  @JvmField val tree: KmpNode = KmpAst.parse(code)
 
-  inline fun transform(block: (KtFile) -> String): FormatterContext {
-    val newCode = block(ktFile)
+  inline fun transform(block: (String, KmpNode) -> String): FormatterContext {
+    val newCode = block(code, tree)
     return if (newCode == code) this else FormatterContext(newCode)
   }
 }

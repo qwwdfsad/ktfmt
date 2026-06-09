@@ -16,101 +16,98 @@
 
 package com.facebook.ktfmt.format
 
-import org.jetbrains.kotlin.com.intellij.psi.PsiElement
-import org.jetbrains.kotlin.com.intellij.psi.impl.source.tree.LeafPsiElement
-import org.jetbrains.kotlin.lexer.KtTokens
-import org.jetbrains.kotlin.psi.KtClassBody
-import org.jetbrains.kotlin.psi.KtContainerNodeForControlStructureBody
-import org.jetbrains.kotlin.psi.KtDotQualifiedExpression
-import org.jetbrains.kotlin.psi.KtEnumEntry
-import org.jetbrains.kotlin.psi.KtIfExpression
-import org.jetbrains.kotlin.psi.KtLambdaExpression
-import org.jetbrains.kotlin.psi.KtObjectDeclaration
-import org.jetbrains.kotlin.psi.KtStringTemplateEntry
-import org.jetbrains.kotlin.psi.KtStringTemplateExpression
-import org.jetbrains.kotlin.psi.KtWhileExpression
-import org.jetbrains.kotlin.psi.psiUtil.getNextSiblingIgnoringWhitespaceAndComments
-import org.jetbrains.kotlin.psi.psiUtil.getPrevSiblingIgnoringWhitespaceAndComments
-import org.jetbrains.kotlin.psi.psiUtil.prevLeaf
+import fleet.org.jetbrains.kotlin.kmp.lexer.KtTokens
+import fleet.org.jetbrains.kotlin.kmp.parser.KtNodeTypes
 
+/** Finds redundant semicolons in the new multiplatform parser's syntax tree. */
 internal class RedundantSemicolonDetector {
-  private val extraSemicolons = mutableListOf<PsiElement>()
+  private val extraSemicolons = mutableListOf<KmpNode>()
 
-  fun getRedundantSemicolonElements(): List<PsiElement> = extraSemicolons
+  fun getRedundantSemicolonElements(): List<KmpNode> = extraSemicolons
 
-  fun takeElement(element: PsiElement) {
+  fun takeElement(element: KmpNode) {
     if (isExtraSemicolon(element)) {
       extraSemicolons += element
     }
   }
 
-  private fun isLastConcreteChild(element: PsiElement): Boolean {
-    val nextSibling = element.getNextSiblingIgnoringWhitespaceAndComments()
-    return nextSibling == null ||
-        (nextSibling is LeafPsiElement && nextSibling.elementType == KtTokens.RBRACE)
+  private fun isLastConcreteChild(element: KmpNode): Boolean {
+    val next = element.nextMeaningfulSibling()
+    return next == null || next.type == KtTokens.RBRACE
   }
 
-  /** returns **true** if this element was an extra comma, **false** otherwise. */
-  private fun isExtraSemicolon(element: PsiElement): Boolean {
-    if (element !is LeafPsiElement || element.elementType != KtTokens.SEMICOLON) {
-      return false
+  private fun isExtraSemicolon(element: KmpNode): Boolean {
+    if (element.type != KtTokens.SEMICOLON) return false
+
+    val parent = element.parent() ?: return false
+    if (parent.type == KtNodeTypes.STRING_TEMPLATE) return false
+
+    if (parent.type == KtNodeTypes.ENUM_ENTRY) {
+      val classBody = parent.parent() ?: return false
+      // Terminating semicolon is redundant only when the entry is the last declaration.
+      val decls =
+          classBody.meaningfulChildren().filterNot {
+            it.type == KtTokens.LBRACE || it.type == KtTokens.RBRACE
+          }
+      return decls.lastOrNull()?.startOffset == parent.startOffset
     }
 
-    val parent = element.parent
-    if (parent is KtStringTemplateExpression || parent is KtStringTemplateEntry) {
-      return false
-    }
-
-    if (parent is KtEnumEntry) {
-      val classBody = parent.parent as KtClassBody
-      // Terminating semicolon with no other class members.
-      return classBody.children.last() == parent
-    }
-
-    val prevConcreteSibling = element.getPrevSiblingIgnoringWhitespaceAndComments()
-    if (parent is KtClassBody) {
+    val prevConcrete = element.prevMeaningfulSibling()
+    if (parent.type == KtNodeTypes.CLASS_BODY) {
       if (
-          prevConcreteSibling is KtObjectDeclaration &&
-              prevConcreteSibling.isCompanion() &&
-              prevConcreteSibling.nameIdentifier == null &&
+          prevConcrete != null &&
+              prevConcrete.type == KtNodeTypes.OBJECT_DECLARATION &&
+              prevConcrete.isCompanionWithoutName() &&
               !isLastConcreteChild(element)
       ) {
         // Example: `class Foo { companion object ; init { } }`
         return false
       }
 
-      val enumEntryList = EnumEntryList.extractChildList(parent) ?: return true
+      val enumEntryList = KmpEnumEntryList.extractChildList(parent) ?: return true
+      val declsEmpty =
+          parent.meaningfulChildren().none {
+            it.type != KtTokens.LBRACE &&
+                it.type != KtTokens.RBRACE &&
+                it.type != KtTokens.SEMICOLON
+          }
       // Is not terminating semicolon or is terminating with no members.
-      return element != enumEntryList.terminatingSemicolon || parent.children.isEmpty()
+      return enumEntryList.terminatingSemicolon?.startOffset != element.startOffset || declsEmpty
     }
 
-    val prevLeaf = element.prevLeaf(false)
     if (
-        (prevConcreteSibling is KtIfExpression || prevConcreteSibling is KtWhileExpression) &&
-            prevLeaf is KtContainerNodeForControlStructureBody &&
-            prevLeaf.text.isEmpty()
+        (prevConcrete?.type == KtNodeTypes.IF || prevConcrete?.type == KtNodeTypes.WHILE) &&
+            prevConcrete.endsWithEmptyControlStructureBody()
     ) {
       return false
     }
 
-    val nextConcreteSibling = element.getNextSiblingIgnoringWhitespaceAndComments()
-
-    /**
-     * Examples:
-     * ```
-     *   val x = foo(0) ; { dead -> lambda }
-     *   val y = foo(1) ; { dead -> lambda }.bar()
-     * ```
-     *
-     * There are a huge number of cases here because the trailing lambda syntax is so flexible.
-     * Therefore, we just assume that all semicolons followed by lambdas are meaningful. The cases
-     * where they could be removed are too rare to justify the risk of changing behaviour.
-     */
+    // Trailing-lambda syntax is too flexible; assume all semicolons followed by lambdas matter.
+    val nextConcrete = element.nextMeaningfulSibling()
     val nextSiblingIsLambda =
-        (nextConcreteSibling is KtLambdaExpression ||
-            (nextConcreteSibling is KtDotQualifiedExpression &&
-                nextConcreteSibling.receiverExpression is KtLambdaExpression))
+        nextConcrete != null &&
+            (nextConcrete.type == KtNodeTypes.LAMBDA_EXPRESSION ||
+                (nextConcrete.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION &&
+                    nextConcrete.meaningfulChildren().firstOrNull()?.type ==
+                        KtNodeTypes.LAMBDA_EXPRESSION))
 
     return !nextSiblingIsLambda
   }
+}
+
+/** An unnamed `companion object`. */
+internal fun KmpNode.isCompanionWithoutName(): Boolean {
+  val modifierList = meaningfulChildren().firstOrNull { it.type == KtNodeTypes.MODIFIER_LIST }
+  val isCompanion =
+      modifierList?.children()?.any { it.text.toString() == "companion" } == true
+  val hasName = meaningfulChildren().any { it.type == KtTokens.IDENTIFIER }
+  return isCompanion && !hasName
+}
+
+/** Whether this control-structure node (`if`/`while`) ends with an empty body container. */
+internal fun KmpNode.endsWithEmptyControlStructureBody(): Boolean {
+  val last = meaningfulChildren().lastOrNull() ?: return false
+  return (last.type == KtNodeTypes.BODY ||
+      last.type == KtNodeTypes.THEN ||
+      last.type == KtNodeTypes.ELSE) && last.text.isEmpty()
 }

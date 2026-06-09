@@ -16,64 +16,33 @@
 
 package com.facebook.ktfmt.format
 
-import org.jetbrains.kotlin.com.intellij.psi.PsiElement
-import org.jetbrains.kotlin.com.intellij.psi.PsiWhiteSpace
-import org.jetbrains.kotlin.kdoc.psi.impl.KDocImpl
-import org.jetbrains.kotlin.psi.KtElement
-import org.jetbrains.kotlin.psi.KtFile
-import org.jetbrains.kotlin.psi.KtImportList
-import org.jetbrains.kotlin.psi.KtPackageDirective
-import org.jetbrains.kotlin.psi.KtReferenceExpression
-import org.jetbrains.kotlin.psi.KtTreeVisitorVoid
-import org.jetbrains.kotlin.psi.psiUtil.endOffset
-import org.jetbrains.kotlin.psi.psiUtil.startOffset
+import fleet.org.jetbrains.kotlin.kmp.lexer.KtTokens
 
 /**
  * Adds and removes elements that are not strictly needed in the code, such as semicolons and unused
  * imports.
+ *
+ * Consumes the new multiplatform parser's lightweight syntax tree ([KmpAst]) rather than PSI. The
+ * caller may pass an already-parsed [root] to avoid re-parsing on the happy path.
  */
 object RedundantElementManager {
   /** Remove extra semicolons and unused imports, if enabled in the [options] */
-  fun dropRedundantElements(code: String, options: FormattingOptions): String =
-      dropRedundantElements(Parser.parse(code), options)
-
-  internal fun dropRedundantElements(file: KtFile, options: FormattingOptions): String {
-    val code = file.text
+  fun dropRedundantElements(
+      code: String,
+      options: FormattingOptions,
+      root: KmpNode = KmpAst.parse(code),
+  ): String {
     val redundantImportDetector = RedundantImportDetector(enabled = options.removeUnusedImports)
     val redundantSemicolonDetector = RedundantSemicolonDetector()
     val trailingCommaDetector = TrailingCommas.Detector()
 
-    file.accept(
-        object : KtTreeVisitorVoid() {
-          override fun visitElement(element: PsiElement) {
-            if (element is KDocImpl) {
-              redundantImportDetector.takeKdoc(element)
-              return
-            }
-
-            redundantSemicolonDetector.takeElement(element)
-            if (options.trailingCommaManagementStrategy.removeRedundantTrailingCommas) {
-              trailingCommaDetector.takeElement(element)
-            }
-            super.visitElement(element)
-          }
-
-          override fun visitPackageDirective(directive: KtPackageDirective) {
-            redundantImportDetector.takePackageDirective(directive) {
-              super.visitPackageDirective(directive)
-            }
-          }
-
-          override fun visitImportList(importList: KtImportList) {
-            redundantImportDetector.takeImportList(importList) { super.visitImportList(importList) }
-          }
-
-          override fun visitReferenceExpression(expression: KtReferenceExpression) {
-            redundantImportDetector.takeReferenceExpression(expression)
-            super.visitReferenceExpression(expression)
-          }
-        }
-    )
+    redundantImportDetector.analyze(root)
+    for (node in root.descendants()) {
+      redundantSemicolonDetector.takeElement(node)
+      if (options.trailingCommaManagementStrategy.removeRedundantTrailingCommas) {
+        trailingCommaDetector.takeElement(node)
+      }
+    }
 
     val elementsToRemove =
         redundantSemicolonDetector.getRedundantSemicolonElements() +
@@ -82,10 +51,10 @@ object RedundantElementManager {
     if (elementsToRemove.isEmpty()) return code
     val result = StringBuilder(code)
 
-    for (element in elementsToRemove.sortedByDescending(PsiElement::endOffset)) {
+    for (element in elementsToRemove.sortedByDescending { it.endOffset }) {
       // Don't insert extra newlines when the semicolon is already a line terminator
       val replacement =
-          if (element.text == ";" && !element.nextSibling.containsNewline()) {
+          if (element.text.toString() == ";" && !element.nextSiblingContainsNewline()) {
             "\n"
           } else {
             ""
@@ -96,43 +65,36 @@ object RedundantElementManager {
     return result.toString()
   }
 
-  fun addRedundantElements(code: String, options: FormattingOptions): String {
-    if (!options.manageTrailingCommas) {
-      return code
-    }
-    return addRedundantElements(Parser.parse(code), options)
+  fun addRedundantElements(
+      code: String,
+      options: FormattingOptions,
+      root: KmpNode = KmpAst.parse(code),
+  ): String {
+    if (!options.manageTrailingCommas) return code
+    return addRedundantElements(code, root)
   }
 
-  internal fun addRedundantElements(file: KtFile, options: FormattingOptions): String {
-    if (!options.manageTrailingCommas) {
-      return file.text
-    }
-
-    val code = file.text
+  private fun addRedundantElements(code: String, root: KmpNode): String {
     val trailingCommaSuggestor = TrailingCommas.Suggestor()
-
-    file.accept(
-        object : KtTreeVisitorVoid() {
-          override fun visitKtElement(element: KtElement) {
-            trailingCommaSuggestor.takeElement(element)
-            super.visitElement(element)
-          }
-        }
-    )
+    for (node in root.descendants()) {
+      trailingCommaSuggestor.takeElement(node)
+    }
 
     val suggestionElements = trailingCommaSuggestor.getTrailingCommaSuggestions()
     if (suggestionElements.isEmpty()) return code
     val result = StringBuilder(code)
 
-    for (element in suggestionElements.sortedByDescending(PsiElement::endOffset)) {
+    for (element in suggestionElements.sortedByDescending { it.endOffset }) {
       result.insert(element.endOffset, ',')
     }
 
     return result.toString()
   }
 
-  private fun PsiElement?.containsNewline(): Boolean {
-    if (this !is PsiWhiteSpace) return false
-    return this.textContains('\n')
+  private fun KmpNode.nextSiblingContainsNewline(): Boolean {
+    val next = nextSibling() ?: return false
+    return next.type in KtTokens.WHITESPACES && next.text.contains('\n')
   }
 }
+
+
