@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Launcher for the prototype optofmt formatter (ktfmt CLI with the --optofmt-style profile).
+#
+# Build the jar once with:   ./gradlew :ktfmt:shadowJar
+# Then format in place:       ./optofmt src/Foo.kt src/Bar.kt
+# Or format from stdin:       ./optofmt - < Foo.kt
+#
+# Any extra flags pass straight through to ktfmt (e.g. --dry-run, --set-exit-if-changed).
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+jar="$(ls -t "$here"/core/build/libs/ktfmt-*-with-dependencies.jar 2>/dev/null | head -n1 || true)"
+
+if [[ -z "${jar:-}" ]]; then
+  echo "optofmt: jar not found. Build it first:  ./gradlew :ktfmt:shadowJar" >&2
+  exit 1
+fi
+
+exec java -jar "$jar" --optofmt-style "$@"
