@@ -30,6 +30,8 @@ plugins {
 repositories {
   mavenLocal()
   mavenCentral()
+  // SPIKE: hosts the new multiplatform (kmp) Kotlin parser + platform-syntax runtime.
+  maven("https://cache-redirector.jetbrains.com/intellij-dependencies")
 }
 
 dependencies {
@@ -39,6 +41,12 @@ dependencies {
   api(libs.kotlin.stdlib)
   api(libs.kotlin.compilerEmbeddable)
   implementation(libs.ec4j)
+  // SPIKE (parse-speed feasibility): new IntelliJ-PSI-free multiplatform Kotlin parser.
+  // org.jetbrains.kotlin.kmp.parser.KotlinParser (shaded under fleet.*) + its platform-syntax
+  // runtime. Resolved via Gradle module metadata to the JVM variants. Used only by the
+  // benchmark harness in com.facebook.ktfmt.bench; no production code depends on it.
+  implementation("org.jetbrains:kotlin-syntax:0.3.376")
+  implementation("org.jetbrains:syntax-api:0.3.376")
   testImplementation(libs.kotlin.test.junit4)
   testImplementation(libs.googleTruth)
   testImplementation(libs.junit)
@@ -141,6 +149,25 @@ ktfmt {
 group = "com.facebook"
 
 version = rootProject.version
+
+// SPIKE: parse-speed benchmark harness (PSI vs new kmp parser). Not part of the published artifact.
+// Run: ./gradlew :ktfmt:runParseBench --args="<optional path to a .kt file>"
+tasks.register<JavaExec>("runParseBench") {
+  group = "verification"
+  description = "Benchmark the current PSI parser against the new multiplatform (kmp) parser."
+  mainClass.set("com.facebook.ktfmt.bench.ParseBenchmarkKt")
+  classpath = sourceSets["main"].runtimeClasspath
+  // Resolve the default benchmark file path (and any relative --args) against the repo root.
+  workingDir = rootProject.rootDir
+}
+
+tasks.register<JavaExec>("runKmpDump") {
+  group = "verification"
+  description = "Dump the kmp syntax tree for a file (spike tooling for the PSI->kmp migration)."
+  mainClass.set("com.facebook.ktfmt.bench.KmpDumpKt")
+  classpath = sourceSets["main"].runtimeClasspath
+  workingDir = rootProject.rootDir
+}
 
 publishing {
   publications {

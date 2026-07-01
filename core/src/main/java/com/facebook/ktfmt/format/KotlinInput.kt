@@ -32,6 +32,8 @@ import org.jetbrains.kotlin.com.intellij.openapi.util.text.StringUtil
 import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.psi.KtFile
 
+private val PARAM_COMMENT_REGEX = "/\\*[A-Za-z0-9\\s_\\-]+=\\s*\\*/".toRegex()
+
 // TODO: share the code with JavaInput instead of copy-pasting here.
 /**
  * KotlinInput is for Kotlin what JavaInput is for Java.
@@ -42,7 +44,16 @@ import org.jetbrains.kotlin.psi.KtFile
  *
  * <p>See javadoc for JavaInput.
  */
-class KotlinInput(private val text: String, file: KtFile) : Input() {
+class KotlinInput
+private constructor(
+    private val text: String,
+    file: KtFile?,
+    // SPIKE: when non-null, tokens come from the new multiplatform parser instead of PSI.
+    prebuiltToks: List<KotlinTok>?,
+    prebuiltKN: Int,
+) : Input() {
+  constructor(text: String, file: KtFile) : this(text, file, null, 0)
+
   private val tokens: ImmutableList<Token> // The Tokens for this input.
   private val positionToColumnMap: ImmutableMap<Int, Int> // Map Tok position to column.
   private val positionTokenMap: ImmutableRangeMap<Int, Token> // Map position to Token.
@@ -51,7 +62,7 @@ class KotlinInput(private val text: String, file: KtFile) : Input() {
 
   init {
     setLines(ImmutableList.copyOf(Newlines.lineIterator(text)))
-    val toks = buildToks(file, text)
+    val toks = buildToks(file, prebuiltToks, prebuiltKN, text)
     positionToColumnMap = makePositionToColumnMap(toks)
     tokens = buildTokens(toks)
     positionTokenMap = buildTokenPositionsMap(tokens)
@@ -136,14 +147,38 @@ class KotlinInput(private val text: String, file: KtFile) : Input() {
     return builder.build()
   }
 
-  private fun buildToks(file: KtFile, fileText: String): ImmutableList<KotlinTok> {
-    val tokenizer = Tokenizer(fileText, file)
-    file.accept(tokenizer)
-    val toks = tokenizer.toks
-    toks.add(KotlinTok(tokenizer.index, "", "", fileText.length, 0, true, KtTokens.EOF))
-    kN = tokenizer.index
+  private fun buildToks(
+      file: KtFile?,
+      prebuiltToks: List<KotlinTok>?,
+      prebuiltKN: Int,
+      fileText: String,
+  ): ImmutableList<KotlinTok> {
+    val toks: MutableList<KotlinTok>
+    val tokCount: Int
+    if (prebuiltToks != null) {
+      toks = prebuiltToks.toMutableList()
+      tokCount = prebuiltKN
+    } else {
+      val tokenizer = Tokenizer(fileText, file!!)
+      file.accept(tokenizer)
+      toks = tokenizer.toks
+      tokCount = tokenizer.index
+    }
+    toks.add(KotlinTok(tokCount, "", "", fileText.length, 0, true, KtTokens.EOF))
+    kN = tokCount
     computeRanges(toks)
     return ImmutableList.copyOf(toks)
+  }
+
+  companion object {
+    /**
+     * Build an [Input] whose tokens come from the new multiplatform (kmp) parser. [tree] is the
+     * already-parsed syntax tree for [text], reused to avoid re-parsing.
+     */
+    fun fromKmp(text: String, tree: KmpNode = KmpAst.parse(text)): KotlinInput {
+      val (toks, tokCount) = KmpTokenizer.tokenize(text, tree)
+      return KotlinInput(text, file = null, prebuiltToks = toks, prebuiltKN = tokCount)
+    }
   }
 
   private fun buildTokens(toks: List<KotlinTok>): ImmutableList<Token> {
@@ -213,7 +248,7 @@ class KotlinInput(private val text: String, file: KtFile) : Input() {
   }
 
   private fun isParamComment(tok: Tok): Boolean {
-    return tok.isSlashStarComment && tok.text.matches("/\\*[A-Za-z0-9\\s_\\-]+=\\s*\\*/".toRegex())
+    return tok.isSlashStarComment && tok.text.matches(PARAM_COMMENT_REGEX)
   }
 
   override fun getkN(): Int = kN

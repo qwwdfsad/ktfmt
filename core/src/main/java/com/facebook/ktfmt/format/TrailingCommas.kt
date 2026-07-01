@@ -16,147 +16,110 @@
 
 package com.facebook.ktfmt.format
 
-import org.jetbrains.kotlin.com.intellij.psi.PsiComment
-import org.jetbrains.kotlin.com.intellij.psi.PsiElement
-import org.jetbrains.kotlin.com.intellij.psi.PsiWhiteSpace
-import org.jetbrains.kotlin.com.intellij.psi.impl.source.tree.LeafPsiElement
-import org.jetbrains.kotlin.lexer.KtTokens
-import org.jetbrains.kotlin.psi.KtClassBody
-import org.jetbrains.kotlin.psi.KtCollectionLiteralExpression
-import org.jetbrains.kotlin.psi.KtElement
-import org.jetbrains.kotlin.psi.KtEnumEntry
-import org.jetbrains.kotlin.psi.KtFunctionLiteral
-import org.jetbrains.kotlin.psi.KtLambdaExpression
-import org.jetbrains.kotlin.psi.KtParameterList
-import org.jetbrains.kotlin.psi.KtTypeArgumentList
-import org.jetbrains.kotlin.psi.KtTypeParameterList
-import org.jetbrains.kotlin.psi.KtValueArgumentList
-import org.jetbrains.kotlin.psi.KtWhenEntry
+import fleet.org.jetbrains.kotlin.kmp.lexer.KtTokens
+import fleet.org.jetbrains.kotlin.kmp.parser.KtNodeTypes
 
-/** Detects trailing commas or elements that should have trailing commas. */
+/**
+ * Detects trailing commas, or elements that should have trailing commas, in the new multiplatform
+ * parser's syntax tree.
+ */
 object TrailingCommas {
 
   class Detector {
-    private val trailingCommas = mutableListOf<PsiElement>()
+    private val trailingCommas = mutableListOf<KmpNode>()
 
-    fun getTrailingCommaElements(): List<PsiElement> = trailingCommas
+    fun getTrailingCommaElements(): List<KmpNode> = trailingCommas
 
-    /** returns **true** if this element was a traling comma, **false** otherwise. */
-    fun takeElement(element: PsiElement) {
+    fun takeElement(element: KmpNode) {
       if (isTrailingComma(element)) {
         trailingCommas += element
       }
     }
 
-    private fun isTrailingComma(element: PsiElement): Boolean {
-      if (element !is LeafPsiElement || element.elementType != KtTokens.COMMA) {
-        return false
-      }
-      return extractManagedList(element.parent)?.trailingComma == element
+    private fun isTrailingComma(element: KmpNode): Boolean {
+      if (element.type != KtTokens.COMMA) return false
+      val parent = element.parent() ?: return false
+      return extractManagedList(parent)?.trailingComma?.startOffset == element.startOffset
     }
   }
 
   class Suggestor {
-    private val suggestionElements = mutableListOf<PsiElement>()
+    private val suggestionElements = mutableListOf<KmpNode>()
 
-    fun getTrailingCommaSuggestions(): List<PsiElement> = suggestionElements
+    fun getTrailingCommaSuggestions(): List<KmpNode> = suggestionElements
 
-    /**
-     * Record elements which should have trailing commas inserted.
-     *
-     * This function determines which element type which may need trailing commas, as well as logic
-     * for when they shold be inserted.
-     *
-     * Example:
-     * ```
-     * fun foo(
-     *   x: VeryLongName,
-     *   y: MoreThanLineLimit // Record this list
-     * ) { }
-     *
-     * fun bar(x: ShortName, y: FitsOnLine) { } // Ignore this list
-     * ```
-     */
-    fun takeElement(element: KtElement) {
-      when (element) {
-        is KtEnumEntry, // Only suggest on the KtClassBody container
-        is KtWhenEntry -> return
-        is KtParameterList -> {
-          if (element.parent is KtFunctionLiteral && element.parent.parent is KtLambdaExpression) {
+    fun takeElement(element: KmpNode) {
+      when (element.type) {
+        // Only suggest on the container, not the entries themselves.
+        KtNodeTypes.ENUM_ENTRY,
+        KtNodeTypes.WHEN_ENTRY -> return
+        KtNodeTypes.VALUE_PARAMETER_LIST -> {
+          val parent = element.parent()
+          if (parent?.type == KtNodeTypes.FUNCTION_LITERAL &&
+              parent.parent()?.type == KtNodeTypes.LAMBDA_EXPRESSION) {
             return // Never add trailing commas to lambda param lists
           }
         }
-        is KtClassBody -> {
-          EnumEntryList.extractChildList(element)?.also {
+        KtNodeTypes.CLASS_BODY -> {
+          KmpEnumEntryList.extractChildList(element)?.also {
             if (it.terminatingSemicolon != null) {
-              return // Never add a trailing comma after there is already a terminating semicolon
+              return // Never add a trailing comma when there is already a terminating semicolon
             }
           }
         }
       }
 
       val list = extractManagedList(element) ?: return
-      if (!element.textContains('\n')) {
+      if (!element.text.contains('\n')) {
         return // Only suggest trailing commas where there is already a line break
       }
       if (list.items.size <= 1) {
         return // Never insert commas to single-element lists
       }
       if (list.trailingComma != null) {
-        return // Never insert a comma if there already is one somehow
+        return // Never insert a comma if there already is one
       }
 
-      suggestionElements.add(list.items.last().leftLeafIgnoringCommentsAndWhitespace())
+      suggestionElements.add(list.items.last().lastMeaningfulLeaf())
     }
   }
 
-  private class ManagedList(val items: List<KtElement>, val trailingComma: PsiElement?)
+  private class ManagedList(val items: List<KmpNode>, val trailingComma: KmpNode?)
 
-  private fun extractManagedList(element: PsiElement): ManagedList? {
-    return when (element) {
-      is KtValueArgumentList -> ManagedList(element.arguments, element.trailingComma)
-      is KtParameterList -> ManagedList(element.parameters, element.trailingComma)
-      is KtTypeArgumentList -> ManagedList(element.arguments, element.trailingComma)
-      is KtTypeParameterList -> ManagedList(element.parameters, element.trailingComma)
-      is KtCollectionLiteralExpression -> {
-        ManagedList(element.getInnerExpressions(), element.trailingComma)
+  private fun extractManagedList(element: KmpNode): ManagedList? =
+      when (element.type) {
+        KtNodeTypes.VALUE_ARGUMENT_LIST,
+        KtNodeTypes.VALUE_PARAMETER_LIST,
+        KtNodeTypes.TYPE_ARGUMENT_LIST,
+        KtNodeTypes.TYPE_PARAMETER_LIST,
+        KtNodeTypes.COLLECTION_LITERAL_EXPRESSION -> bracketedList(element)
+        KtNodeTypes.WHEN_ENTRY -> whenEntryList(element)
+        KtNodeTypes.ENUM_ENTRY ->
+            KmpEnumEntryList.extractParentList(element).let { ManagedList(it.enumEntries, it.trailingComma) }
+        KtNodeTypes.CLASS_BODY ->
+            KmpEnumEntryList.extractChildList(element)?.let {
+              ManagedList(it.enumEntries, it.trailingComma)
+            }
+        else -> null
       }
-      is KtWhenEntry -> ManagedList(element.conditions.toList(), element.trailingComma)
-      is KtEnumEntry -> {
-        EnumEntryList.extractParentList(element).let {
-          ManagedList(it.enumEntries, it.trailingComma)
-        }
-      }
-      is KtClassBody -> {
-        EnumEntryList.extractChildList(element)?.let {
-          ManagedList(it.enumEntries, it.trailingComma)
-        }
-      }
-      else -> null
-    }
+
+  /** Items are the composite (non-leaf) children; the trailing comma is the comma after the last. */
+  private fun bracketedList(node: KmpNode): ManagedList {
+    val kids = node.meaningfulChildren()
+    val items = kids.filter { it.firstChild() != null && it.type != KtTokens.COMMA }
+    return ManagedList(items, trailingCommaAfter(kids, items.lastOrNull()))
   }
 
-  /**
-   * Return the element ahead of the where a comma would be appropriate for a list item.
-   *
-   * Example:
-   * ```
-   * fun foo(
-   *   x: VeryLongName,
-   *   y: MoreThanLineLimit /# Comment #/ = { it } /# Comment #/
-   *                                         ^^^^^^ // After this element
-   * ) { }
-   * ```
-   */
-  private fun PsiElement.leftLeafIgnoringCommentsAndWhitespace(): PsiElement {
-    var child = this.lastChild
-    while (child != null) {
-      if (child is PsiWhiteSpace || child is PsiComment) {
-        child = child.prevSibling
-      } else {
-        return child.leftLeafIgnoringCommentsAndWhitespace()
-      }
-    }
-    return this
+  private fun whenEntryList(node: KmpNode): ManagedList {
+    val kids = node.meaningfulChildren()
+    val arrowIndex = kids.indexOfFirst { it.type == KtTokens.ARROW }
+    val beforeArrow = if (arrowIndex >= 0) kids.subList(0, arrowIndex) else kids
+    val items = beforeArrow.filter { it.firstChild() != null && it.type != KtTokens.COMMA }
+    return ManagedList(items, trailingCommaAfter(beforeArrow, items.lastOrNull()))
+  }
+
+  private fun trailingCommaAfter(siblings: List<KmpNode>, lastItem: KmpNode?): KmpNode? {
+    if (lastItem == null) return null
+    return siblings.firstOrNull { it.type == KtTokens.COMMA && it.startOffset > lastItem.startOffset }
   }
 }

@@ -16,178 +16,126 @@
 
 package com.facebook.ktfmt.format
 
-import org.jetbrains.kotlin.com.intellij.psi.PsiElement
-import org.jetbrains.kotlin.kdoc.psi.impl.KDocImpl
-import org.jetbrains.kotlin.kdoc.psi.impl.KDocLink
-import org.jetbrains.kotlin.kdoc.psi.impl.KDocName
-import org.jetbrains.kotlin.kdoc.psi.impl.KDocSection
-import org.jetbrains.kotlin.kdoc.psi.impl.KDocTag
-import org.jetbrains.kotlin.name.FqName
-import org.jetbrains.kotlin.psi.KtImportDirective
-import org.jetbrains.kotlin.psi.KtImportList
-import org.jetbrains.kotlin.psi.KtPackageDirective
-import org.jetbrains.kotlin.psi.KtReferenceExpression
-import org.jetbrains.kotlin.psi.psiUtil.getChildrenOfType
+import fleet.org.jetbrains.kotlin.kmp.lexer.KtTokens
+import fleet.org.jetbrains.kotlin.kmp.parser.KDocParseNodes
+import fleet.org.jetbrains.kotlin.kmp.parser.KtNodeTypes
 
+/** Finds unused imports in the new multiplatform parser's syntax tree. */
 internal class RedundantImportDetector(val enabled: Boolean) {
   companion object {
     private val OPERATORS =
         setOf(
-            // Unary prefix operators
-            "unaryPlus",
-            "unaryMinus",
-            "not",
-            // Increments and decrements
-            "inc",
-            "dec",
-            // Arithmetic operators
-            "plus",
-            "minus",
-            "times",
-            "div",
-            "rem",
-            "mod", // deprecated
-            "rangeTo",
-            // 'In' operator
-            "contains",
-            // Indexed access operator
-            "get",
-            "set",
-            // Invoke operator
-            "invoke",
-            // Augmented assignments
-            "plusAssign",
-            "minusAssign",
-            "timesAssign",
-            "divAssign",
-            "remAssign",
-            "modAssign", // deprecated
-            // Equality and inequality operators
-            "equals",
-            // Comparison operators
-            "compareTo",
-            // Iterator operators
-            "iterator",
-            "next",
-            "hasNext",
-            // Bitwise operators
-            "and",
-            "or",
-            // Property delegation operators
-            "getValue",
-            "setValue",
-            "provideDelegate",
-            // assign operator - Gradle compiler plugin
-            // https://blog.gradle.org/simpler-kotlin-dsl-property-assignment
-            "assign",
-        )
+            "unaryPlus", "unaryMinus", "not", "inc", "dec", "plus", "minus", "times", "div", "rem",
+            "mod", "rangeTo", "contains", "get", "set", "invoke", "plusAssign", "minusAssign",
+            "timesAssign", "divAssign", "remAssign", "modAssign", "equals", "compareTo", "iterator",
+            "next", "hasNext", "and", "or", "getValue", "setValue", "provideDelegate", "assign")
 
     private val COMPONENT_OPERATOR_REGEX = Regex("component\\d+")
-
-    private val KDOC_TAG_SKIP_FIRST_REFERENCE_REGEX = Regex("^@(param|property) (.+)")
+    private val KDOC_TAG_SKIP_FIRST_REFERENCE_REGEX = Regex("^@(param|property) (.+)", RegexOption.DOT_MATCHES_ALL)
   }
 
-  private var thisPackage: FqName? = null
-
+  private var thisPackage: String = ""
   private val usedReferences = OPERATORS.toMutableSet()
+  private val candidates = mutableListOf<KmpNode>()
 
-  private lateinit var importCleanUpCandidates: Set<KtImportDirective>
-
-  private var isPackageElement = false
-  private var isImportElement = false
-
-  fun takePackageDirective(directive: KtPackageDirective, superBlock: () -> Unit) {
-    if (!enabled) {
-      return superBlock.invoke()
-    }
-
-    thisPackage = directive.fqName
-
-    isPackageElement = true
-    superBlock.invoke()
-    isPackageElement = false
-  }
-
-  fun takeImportList(importList: KtImportList, superBlock: () -> Unit) {
-    if (!enabled) {
-      return superBlock.invoke()
-    }
-
-    importCleanUpCandidates =
-        importList.imports
-            .filter { import ->
-              val identifier = import.identifier ?: return@filter false
-              import.isValidImport &&
-                  identifier !in OPERATORS &&
-                  !COMPONENT_OPERATOR_REGEX.matches(identifier)
-            }
-            .toSet()
-
-    isImportElement = true
-    superBlock.invoke()
-    isImportElement = false
-  }
-
-  fun takeKdoc(kdoc: KDocImpl) {
-    kdoc.getChildrenOfType<KDocSection>().forEach { kdocSection ->
-      val tagLinks =
-          kdocSection.getChildrenOfType<KDocTag>().flatMap { tag ->
-            val tagLinks = tag.getChildrenOfType<KDocLink>().toList()
-            when {
-              KDOC_TAG_SKIP_FIRST_REFERENCE_REGEX.matches(tag.text) -> tagLinks.drop(1)
-              else -> tagLinks
-            }
-          }
-
-      val links = kdocSection.getChildrenOfType<KDocLink>() + tagLinks
-
-      val references = links.flatMap { link ->
-        link.getChildrenOfType<KDocName>().mapNotNull {
-          it.getQualifiedName().firstOrNull()?.trim('[', ']')
-        }
-      }
-
-      usedReferences += references
-    }
-  }
-
-  fun takeReferenceExpression(expression: KtReferenceExpression) {
+  /** Walk the whole file: collect the package, import candidates, and all used references. */
+  fun analyze(root: KmpNode) {
     if (!enabled) return
 
-    if (!isPackageElement && !isImportElement && expression.children.isEmpty()) {
-      usedReferences += expression.text.trim('`')
+    val packageDirective = root.children().firstOrNull { it.type == KtNodeTypes.PACKAGE_DIRECTIVE }
+    thisPackage = packageDirective?.pathSegments()?.joinToString(".") ?: ""
+
+    val importList = root.children().firstOrNull { it.type == KtNodeTypes.IMPORT_LIST }
+    importList?.meaningfulChildren()?.forEach { directive ->
+      if (directive.type != KtNodeTypes.IMPORT_DIRECTIVE) return@forEach
+      val identifier = directive.importIdentifier() ?: return@forEach
+      if (identifier !in OPERATORS && !COMPONENT_OPERATOR_REGEX.matches(identifier)) {
+        candidates += directive
+      }
+    }
+
+    for (top in root.children()) {
+      if (top.type == KtNodeTypes.PACKAGE_DIRECTIVE || top.type == KtNodeTypes.IMPORT_LIST) continue
+      for (node in listOf(top) + top.descendants()) {
+        when (node.type) {
+          KtNodeTypes.REFERENCE_EXPRESSION -> usedReferences += node.text.toString().trim('`')
+          KDocParseNodes.KDOC_SECTION -> collectKdocReferences(node)
+        }
+      }
     }
   }
 
-  fun getRedundantImportElements(): List<PsiElement> {
+  private fun collectKdocReferences(section: KmpNode) {
+    fun firstSegment(name: KmpNode): String =
+        name.text.toString().trim().substringBefore('.').trim('[', ']', '`')
+
+    for (child in section.meaningfulChildren()) {
+      if (child.type == KDocParseNodes.KDOC_TAG) {
+        val names = child.descendants().filter { it.type == KDocParseNodes.KDOC_NAME }.toList()
+        val use =
+            if (KDOC_TAG_SKIP_FIRST_REFERENCE_REGEX.matches(child.text.toString())) names.drop(1)
+            else names
+        use.forEach { usedReferences += firstSegment(it) }
+      }
+    }
+    // Names directly under the section (not inside a tag).
+    section
+        .descendants()
+        .filter { it.type == KDocParseNodes.KDOC_NAME && !it.hasAncestorOfType(KDocParseNodes.KDOC_TAG) }
+        .forEach { usedReferences += firstSegment(it) }
+  }
+
+  fun getRedundantImportElements(): List<KmpNode> {
     if (!enabled) return emptyList()
 
-    val identifierCounts =
-        importCleanUpCandidates.groupBy { it.identifier }.mapValues { it.value.size }
+    val identifierCounts = candidates.groupingBy { it.importIdentifier() }.eachCount()
 
-    return importCleanUpCandidates.filter { importCandidate ->
-      val isUsed = importCandidate.identifier in usedReferences
-      val importedFqName = importCandidate.importedFqName
-      // For backtick-escaped full-path imports (e.g., import `foo.bar.baz`), the PSI creates
-      // a single-segment FqName whose short name contains dots. Its parent() returns ROOT,
-      // which would incorrectly match the default package. Detect and exclude this case.
-      val isBracketEscapedPath = importedFqName?.shortName()?.asString()?.contains('.') == true
-      val isFromThisPackage = !isBracketEscapedPath && importedFqName?.parent() == thisPackage
-      val hasAlias = importCandidate.alias != null
-      val isOverload = requireNotNull(identifierCounts[importCandidate.identifier]) > 1
-      // Remove if...
+    return candidates.filter { directive ->
+      val identifier = directive.importIdentifier()
+      val isUsed = identifier in usedReferences
+      val segments = directive.pathSegments()
+      // `import `foo.bar.baz`` parses as a single name containing dots.
+      val isBracketEscapedPath = segments.size == 1 && segments[0].contains('.')
+      val parentPackage = if (segments.size <= 1) "" else segments.dropLast(1).joinToString(".")
+      val isFromThisPackage = !isBracketEscapedPath && parentPackage == thisPackage
+      val hasAlias = directive.children().any { it.type == KtNodeTypes.IMPORT_ALIAS }
+      val isOverload = (identifierCounts[identifier] ?: 0) > 1
       !isUsed || (isFromThisPackage && !hasAlias && !isOverload)
     }
   }
+}
 
-  /** The imported short name, possibly an alias name, if any. */
-  private inline val KtImportDirective.identifier: String?
-    get() {
-      val name = importPath?.importedName?.identifier?.trim('`') ?: return null
-      // When the entire import path is backtick-escaped (e.g., import `foo.bar.baz`),
-      // the PSI treats it as a single name containing dots rather than a dot-qualified
-      // expression. Extract the last segment to match reference expressions in the code body.
-      val dotIndex = name.lastIndexOf('.')
-      return if (dotIndex >= 0) name.substring(dotIndex + 1) else name
-    }
+/**
+ * The dotted name segments of a package/import directive, taken from the [REFERENCE_EXPRESSION]
+ * leaves (so they are free of the inter-token whitespace the raw composite text may contain), with
+ * backticks stripped.
+ */
+private fun KmpNode.pathSegments(): List<String> {
+  val path =
+      children().firstOrNull {
+        it.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
+            it.type == KtNodeTypes.REFERENCE_EXPRESSION
+      } ?: return emptyList()
+  return (listOf(path) + path.descendants())
+      .filter { it.type == KtNodeTypes.REFERENCE_EXPRESSION }
+      .map { it.text.toString().trim().trim('`') }
+}
+
+/** The import's short name (alias if present, else last path segment). */
+private fun KmpNode.importIdentifier(): String? {
+  // Star imports have no imported short name, so they are never cleanup candidates.
+  if (children().any { it.type == KtTokens.MUL }) return null
+  val alias =
+      children()
+          .firstOrNull { it.type == KtNodeTypes.IMPORT_ALIAS }
+          ?.children()
+          ?.lastOrNull { it.type == KtTokens.IDENTIFIER }
+          ?.text
+          ?.toString()
+          ?.trim('`')
+  if (alias != null) return alias
+  val last = pathSegments().lastOrNull() ?: return null
+  // `import `foo.bar.baz`` is a single name containing dots; match the last segment.
+  val dot = last.lastIndexOf('.')
+  return if (dot >= 0) last.substring(dot + 1) else last
 }
