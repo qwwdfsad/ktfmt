@@ -45,6 +45,11 @@ internal class NBreak(
     val flat: String,
     val plusIndent: Indent,
     val tag: BreakTag?,
+    // RULES §3: this break sits right after an introducer (`=`, `:`, `->`) — taking it detaches the
+    // introducer from its opener. The objective penalizes taken introducer breaks below overflow but
+    // above line-count, so an attach-and-wrap layout beats a break-after-introducer one whenever both
+    // fit, but overflow still forces the break. See [Metrics.introducerBreaks].
+    val introducer: Boolean = false,
 ) : NDoc()
 
 /** Literal text — a source token or a single space. */
@@ -302,6 +307,16 @@ class NativeSink(
     pendingForced = NBreak(FillMode.FORCED, "", plusIndent, null)
   }
 
+  /**
+   * A forced break that DETACHES an introducer from its opener (§3): the "break after `=`/`:`/`->`"
+   * arrangement of an [emitAlt] introducer pair. Tagged so the objective can prefer the attached
+   * arrangement whenever both fit (see [NBreak.introducer] / [Metrics.introducerBreaks]).
+   */
+  internal fun forcedIntroducerBreak(plusIndent: Indent) {
+    resolvePending()
+    pendingForced = NBreak(FillMode.FORCED, "", plusIndent, null, introducer = true)
+  }
+
   override fun blankLineWanted(wanted: BlankLineWanted) {
     // Resolve PRESERVE against the source *now* (a blank is kept iff the author left one at the
     // cursor), so the request no longer depends on the current formatting. Without this the native
@@ -497,6 +512,7 @@ class NativeRenderer(
       val lines: Int, // count of completed lines
       val deepestIndent: Int, // deepest start-indent among wrapped (broken) lines
       val lastCol: Int, // end column of the still-open last line
+      val introBreaks: Int, // count of taken introducer breaks (RULES §3, see NBreak.introducer)
       val emit: () -> Unit,
   )
 
@@ -509,6 +525,7 @@ class NativeRenderer(
         totalOverflow = l.overSum + openOverflow,
         lines = l.lines + 1,
         deepestIndent = l.deepestIndent,
+        introducerBreaks = l.introBreaks,
     )
   }
 
@@ -610,11 +627,11 @@ class NativeRenderer(
 
   // ---- Layout constructors (compose candidates; their emit thunks chain so render == cost) ------
 
-  private fun leaf(lastCol: Int, emit: () -> Unit): Layout = Layout(0, 0, 0, 0, 0, lastCol, emit)
+  private fun leaf(lastCol: Int, emit: () -> Unit): Layout = Layout(0, 0, 0, 0, 0, lastCol, 0, emit)
 
   /** [a] followed by zero-break content ending at [newLastCol]; carries [a]'s completed lines. */
   private fun extend(a: Layout, newLastCol: Int, emit: () -> Unit): Layout =
-      Layout(a.worst, a.overLines, a.overSum, a.lines, a.deepestIndent, newLastCol) {
+      Layout(a.worst, a.overLines, a.overSum, a.lines, a.deepestIndent, newLastCol, a.introBreaks) {
         a.emit()
         emit()
       }
@@ -652,10 +669,12 @@ class NativeRenderer(
     }
     close(a.lastCol + parts.first().length) // first physical line ends where the open line was
     for (i in 1 until parts.size - 1) close(parts[i].trimStart().length) // reindented later
-    return Layout(worst, overLines, overSum, lines, a.deepestIndent, parts.last().trimStart().length) {
-      a.emit()
-      emitText(text)
-    }
+    return Layout(
+        worst, overLines, overSum, lines, a.deepestIndent, parts.last().trimStart().length,
+        a.introBreaks) {
+          a.emit()
+          emitText(text)
+        }
   }
 
   /**
@@ -678,7 +697,8 @@ class NativeRenderer(
     }
     walk(doc)
     return Layout(
-        acc.worst, acc.overLines, acc.overSum, acc.lines, acc.deepestIndent, acc.lastCol) {
+        acc.worst, acc.overLines, acc.overSum, acc.lines, acc.deepestIndent, acc.lastCol,
+        acc.introBreaks) {
           appendFlat(doc)
         }
   }
@@ -692,6 +712,7 @@ class NativeRenderer(
           lines = a.lines + b.lines,
           deepestIndent = maxOf(a.deepestIndent, b.deepestIndent),
           lastCol = b.lastCol,
+          introBreaks = a.introBreaks + b.introBreaks,
           emit = { a.emit(); b.emit() },
       )
 
@@ -707,6 +728,7 @@ class NativeRenderer(
         lines = a.lines + 1,
         deepestIndent = maxOf(a.deepestIndent, newIndent),
         lastCol = newIndent,
+        introBreaks = a.introBreaks + (if (brk.introducer) 1 else 0),
         emit = {
           a.emit()
           if (brk.tag != null) taken[brk.tag] = true
@@ -717,11 +739,13 @@ class NativeRenderer(
 
   /** [a] then a break that is not taken: its flat text stays on the open line. */
   private fun breakNotTaken(a: Layout, brk: NBreak): Layout =
-      Layout(a.worst, a.overLines, a.overSum, a.lines, a.deepestIndent, a.lastCol + brk.flat.length, {
-        a.emit()
-        if (brk.tag != null) taken[brk.tag] = false
-        emitText(brk.flat)
-      })
+      Layout(
+          a.worst, a.overLines, a.overSum, a.lines, a.deepestIndent, a.lastCol + brk.flat.length,
+          a.introBreaks, {
+            a.emit()
+            if (brk.tag != null) taken[brk.tag] = false
+            emitText(brk.flat)
+          })
 
   /**
    * Keep only non-dominated candidates. [a] dominates [b] when it is no worse on EVERY tracked
@@ -744,6 +768,7 @@ class NativeRenderer(
             a.overSum <= b.overSum &&
             a.lines <= b.lines &&
             a.deepestIndent <= b.deepestIndent &&
+            a.introBreaks <= b.introBreaks &&
             a.lastCol <= b.lastCol) {
           val strict =
               a.worst < b.worst ||
@@ -751,6 +776,7 @@ class NativeRenderer(
                   a.overSum < b.overSum ||
                   a.lines < b.lines ||
                   a.deepestIndent < b.deepestIndent ||
+                  a.introBreaks < b.introBreaks ||
                   a.lastCol < b.lastCol
           if (strict || i < j) {
             dominated = true

@@ -62,6 +62,14 @@ internal constructor(
     val lines: Int,
     /** Deepest indentation any wrapped line starts at (RULES §1.4, "shallowest deepest break"). */
     val deepestIndent: Int,
+    /**
+     * How many introducer breaks the layout takes — a break right after an `=`/`:`/`->` that detaches
+     * the introducer from its opener (RULES §3). Zero means every introducer stayed attached. Ranked
+     * below overflow but above [lines] in [Objectives.DEFAULT], so §3-attachment wins whenever both
+     * arrangements fit, while overflow still forces a break. Monotone and independent of the open-line
+     * column (it counts already-taken forced breaks), so it is safe for the Pareto search.
+     */
+    val introducerBreaks: Int,
 )
 
 /**
@@ -95,10 +103,17 @@ object Objectives {
   private fun lex(vararg tiers: Int): DoubleArray = DoubleArray(tiers.size) { tiers[it].toDouble() }
 
   /**
-   * The full RULES §1, in order: minimize the worst overflow, then the number of overflowing lines,
-   * then the total number of lines, then prefer the shallowest deepest wrap (§1.4 flatness tiebreak).
+   * The full RULES §1, in order: minimize the worst overflow, then the number of overflowing lines;
+   * then (RULES §3) keep introducers attached — prefer the layout that detaches fewer `=`/`:`/`->`
+   * introducers from their openers; then the total number of lines; then the shallowest deepest wrap
+   * (§1.4 flatness tiebreak). §3 sits above line-count so `val x = object : Super(` stays attached
+   * with its args wrapped rather than breaking after `:` to save a line, but below overflow so a
+   * genuinely-too-wide attachment still breaks.
    */
-  val DEFAULT = LayoutObjective { lex(it.worstOverflow, it.overflowLines, it.lines, it.deepestIndent) }
+  val DEFAULT =
+      LayoutObjective {
+        lex(it.worstOverflow, it.overflowLines, it.introducerBreaks, it.lines, it.deepestIndent)
+      }
 
   /** RULES §1 without the §1.4 flatness tiebreak (worst overflow, overflowing lines, then lines). */
   val NO_FLATNESS_TIEBREAK = LayoutObjective { lex(it.worstOverflow, it.overflowLines, it.lines) }

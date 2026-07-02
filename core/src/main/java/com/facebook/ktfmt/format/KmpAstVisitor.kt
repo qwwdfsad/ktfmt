@@ -40,6 +40,24 @@ internal class KmpAstVisitor(
     private val builder: LayoutSink,
     private val code: String,
 ) {
+  // optofmt §9: argument-less annotations that read as modifiers stay inline with the modifier run;
+  // every other annotation goes on its own line above the declaration. This is the inline set.
+  private val INLINE_MODIFIER_ANNOTATIONS =
+      setOf(
+          "PublishedApi",
+          "JvmStatic",
+          "JvmField",
+          "JvmSynthetic",
+          "JvmInline",
+          "JvmOverloads",
+          "JvmDefault",
+          "JvmDefaultWithoutCompatibility",
+          "Volatile",
+          "Transient",
+          "Synchronized",
+          "Strictfp",
+      )
+
   private val expressionBreakIndent: Indent.Const = Indent.Const.make(options.continuationIndent, 1)
   private val expressionBreakNegativeIndent: Indent.Const =
       Indent.Const.make(-options.continuationIndent, 1)
@@ -255,22 +273,7 @@ internal class KmpAstVisitor(
           if (isLambdaOrScopingFunction(initializer)) {
             visitLambdaOrScopingFunction(initializer)
           } else if (options.optofmt) {
-            // optofmt §1/§3: offer BOTH legal arrangements of `= <rhs>` as candidates and let the
-            // optimizer keep whichever has the lower §1 cost:
-            //   attached — `= rhs` on one line, the RHS wrapping its own body at a single indent
-            //              (wins for a `when`/`if`/call-with-args/chain, which fit the `=` line);
-            //   broken   — break after `=`, the RHS whole on the next line at one indent (wins for
-            //              a body-less RHS like `IdentityHashMap<…>()` that would overflow the line).
-            // The RHS subtree is built once and shared between the two arrangements.
-            val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
-            val rhs = sink.capture { visit(initializer) }
-            val attached = sink.capture { sink.space(); sink.appendSubtree(rhs) }
-            val broken =
-                sink.capture {
-                  sink.forcedBreak(expressionBreakIndent)
-                  sink.appendSubtree(rhs)
-                }
-            sink.emitAlt(listOf(attached, broken))
+            emitIntroducerRhs(initializer) { visit(initializer) }
           } else {
             builder.breakOp(FillMode.UNIFIED, " ", expressionBreakIndent)
             block(expressionBreakIndent) {
@@ -456,6 +459,10 @@ internal class KmpAstVisitor(
           emit("=")
           if (isLambdaOrScopingFunction(bodyExpression)) {
             visitLambdaOrScopingFunction(bodyExpression)
+          } else if (options.optofmt) {
+            // optofmt §1/§3/§7: an expression body's `=` is an introducer, exactly like a property
+            // initializer's `=` (see visitProperty).
+            emitIntroducerRhs(bodyExpression) { visit(bodyExpression) }
           } else {
             block(expressionBreakIndent) {
               builder.breakOp(FillMode.INDEPENDENT, " ", ZERO)
@@ -531,6 +538,22 @@ internal class KmpAstVisitor(
     // annotation inline (`@PublishedApi internal val flow: …`). So only force the own-line break for
     // declaration modifier lists, not parameter ones.
     val isParameterModifiers = list.parent()?.type == KtNodeTypes.VALUE_PARAMETER
+    // optofmt §9: an annotation goes on its OWN line if it carries arguments (`@JvmName("other")`,
+    // `@Suppress("…")`, `@Deprecated(...)`) or is a non-modifier-like annotation (`@Test`); only
+    // argument-less *modifier-like* annotations (`@PublishedApi`, `@JvmStatic`, …) stay inline.
+    fun annotationNeedsOwnLine(child: KmpNode) =
+        child.type == KtNodeTypes.ANNOTATION_ENTRY &&
+            (child.child(KtNodeTypes.VALUE_ARGUMENT_LIST) != null ||
+                annotationShortName(child) !in INLINE_MODIFIER_ANNOTATIONS)
+    // Once ANY annotation on the declaration needs its own line, put EVERY annotation on its own line
+    // — never mix own-line and inline annotations on one declaration (that leaves an argument-carrying
+    // annotation glued to a preceding `@JvmStatic`, contradicting §9). A lone modifier-like annotation
+    // with no such sibling still stays inline. ktfmt keeps everything inline. (Not for parameter
+    // modifier lists — §9 keeps a parameter's annotations inline, e.g. `@PublishedApi internal val`.)
+    val breakEveryAnnotation =
+        options.optofmt &&
+            !isParameterModifiers &&
+            list.meaningfulChildren().any { annotationNeedsOwnLine(it) }
     var onlyAnnotationsSoFar = true
     for (child in list.meaningfulChildren()) {
       if (child.type == KtNodeTypes.CONTEXT_RECEIVER_LIST) {
@@ -545,16 +568,8 @@ internal class KmpAstVisitor(
         // An annotation entry (or context list); not fully ported yet.
         visit(child)
       }
-      // optofmt §9: a standalone annotation that carries arguments (`@JvmName("other")`) sits on
-      // its own line directly above the declaration, while argument-less modifier-like annotations
-      // (`@PublishedApi`, `@JvmStatic`) and plain modifiers stay inline. ktfmt keeps everything
-      // inline. Heuristic: "carries arguments" == has a value-argument list.
-      val annotationWithArgs =
-          options.optofmt &&
-              !isParameterModifiers &&
-              child.type == KtNodeTypes.ANNOTATION_ENTRY &&
-              child.child(KtNodeTypes.VALUE_ARGUMENT_LIST) != null
-      if (annotationWithArgs) {
+      val ownLineAnnotation = breakEveryAnnotation && child.type == KtNodeTypes.ANNOTATION_ENTRY
+      if (ownLineAnnotation) {
         builder.forcedBreak()
       } else if (onlyAnnotationsSoFar && !options.optofmt) {
         builder.breakOp(FillMode.UNIFIED, " ", ZERO)
@@ -565,6 +580,68 @@ internal class KmpAstVisitor(
         builder.space()
       }
     }
+  }
+
+  /**
+   * The short (unqualified) name of an annotation entry — `@kotlin.jvm.JvmStatic` -> `JvmStatic`,
+   * `@field:Volatile` -> `Volatile`, `@JvmName("x")` -> `JvmName`. Null if it has no callee.
+   */
+  /**
+   * True if [node] is a member-access call chain (`a.b().c()`). RULES §7 governs how such a chain
+   * wraps — the receiver through its first call stays together, then each `.call` breaks to its own
+   * line — so the `=` introducer before it must NOT be §3-attachment-penalized: breaking after `=`
+   * to keep the receiver-through-first-call intact has to stay competitive. Otherwise the penalty
+   * would attach `= this.foo(` and tear the first call's arguments to make it fit, splitting the §7
+   * unit (see AbstractLincheckTest.commonConfiguration).
+   */
+  private fun isCallChain(node: KmpNode?): Boolean =
+      node?.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
+          node?.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION
+
+  /**
+   * optofmt §1/§3: emit an introducer's right-hand side ([rhsExpr], built by [buildRhs]) as two
+   * competing candidate layouts and let the optimizer keep the lower-§1-cost one. Used for every
+   * `= rhs` / `name = rhs` introducer (property init, assignment, expression body, named argument):
+   *   - attached — `= rhs` on the introducer's line, the RHS wrapping its own contents (call args,
+   *     `+` concat, chain) at one indent (§7: keep the receiver-through-first-call on the line);
+   *   - broken — break after the introducer, the RHS on the next line at one indent.
+   *
+   * The RHS subtree is built once (its source-token cursor advances once) and shared.
+   *
+   * The broken candidate wraps a non-chain RHS in a `block(expressionBreakIndent)` and breaks to ZERO
+   * *inside* it, rather than breaking by [expressionBreakIndent] with no enclosing block. In the
+   * native engine a break only moves the open column; a following sibling level still computes its
+   * indent from the *enclosing* level's base — so without the wrapper a call's argument list (or a
+   * concat's operands) would indent from the introducer's base and land one level too shallow (the
+   * call opener and its args on the same column, closer dedented past the opener). A call-chain RHS
+   * already supplies its own single-indent block (see [emitQualifiedExpression]) and must NOT be
+   * double-wrapped, and its break stays unpenalized so §7 keeps the receiver-through-first-call
+   * intact rather than tearing it to attach.
+   */
+  private fun emitIntroducerRhs(rhsExpr: KmpNode?, buildRhs: () -> Unit) {
+    val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
+    val rhs = sink.capture(buildRhs)
+    val attached = sink.capture { sink.space(); sink.appendSubtree(rhs) }
+    val broken =
+        sink.capture {
+          if (isCallChain(rhsExpr)) {
+            sink.forcedBreak(expressionBreakIndent)
+            sink.appendSubtree(rhs)
+          } else {
+            block(expressionBreakIndent) {
+              sink.forcedIntroducerBreak(ZERO)
+              sink.appendSubtree(rhs)
+            }
+          }
+        }
+    sink.emitAlt(listOf(attached, broken))
+  }
+
+  private fun annotationShortName(entry: KmpNode): String? {
+    val callee =
+        entry.meaningfulChildren().firstOrNull { it.type == KtNodeTypes.CONSTRUCTOR_CALLEE }
+            ?: return null
+    return callee.text.toString().substringBefore('<').substringAfterLast('.').trim()
   }
 
   private fun visitParameterList(node: KmpNode) {
@@ -613,7 +690,11 @@ internal class KmpAstVisitor(
         builder.forcedBreak()
         builder.blankLineWanted(BlankLineWanted.PRESERVE)
         emitChildren(children)
-        if (commentOnlyBody && rbrace != null) builder.sync(rbrace.startOffset)
+        // Flush any comment sitting between the last child and `}` INSIDE the body level, so it lands
+        // at the body indent. Without this the comment stays pending until the `}` token is emitted —
+        // by then the body level has closed, so it renders one level too shallow (at the brace indent).
+        // §8: optofmt owns comment indentation, so reindent it to the body level regardless of source.
+        if (options.optofmt && rbrace != null) builder.sync(rbrace.startOffset)
       }
       builder.forcedBreak()
       builder.blankLineWanted(BlankLineWanted.NO)
@@ -671,7 +752,7 @@ internal class KmpAstVisitor(
             val attached = sink.capture { sink.space(); sink.appendSubtree(supers) }
             val broken =
                 sink.capture {
-                  sink.forcedBreak(expressionBreakIndent)
+                  sink.forcedIntroducerBreak(expressionBreakIndent)
                   sink.appendSubtree(supers)
                 }
             sink.emitAlt(listOf(attached, broken))
@@ -737,10 +818,19 @@ internal class KmpAstVisitor(
               it.type == KtNodeTypes.SUPER_TYPE_CALL_ENTRY ||
               it.type == KtNodeTypes.DELEGATED_SUPER_TYPE_ENTRY
         }
-    // optofmt §3/§2: a single attached supertype is visited directly (no leading break after the
-    // `:` and no extra continuation indent); its own constructor argument list wraps at one indent.
-    if (options.optofmt && entries.size == 1) {
-      visit(entries[0])
+    // optofmt §3/§2: keep the supertype list WHOLE on the `:` line (no break points, items joined by
+    // ", "), so the introducer stays attached. When the header overflows, a supertype's own
+    // constructor argument list wraps (§4) at one indent — the list itself is not a §4 wrap point, so
+    // it is never split one-per-line and `:` is never left dangling. (Matches the single-supertype
+    // case, just extended to several supertypes.)
+    if (options.optofmt) {
+      entries.forEachIndexed { i, entry ->
+        if (i != 0) {
+          emit(",")
+          builder.space()
+        }
+        visit(entry)
+      }
     } else {
       block(expressionBreakIndent) { visitEachCommaSeparated(entries) }
     }
@@ -788,6 +878,15 @@ internal class KmpAstVisitor(
       val blankLineBetweenMembers =
           when {
             prev == null -> BlankLineWanted.PRESERVE
+            // optofmt §11: a run of consecutive same-kind *one-line* members stays tight — the
+            // author's spacing is preserved (no blank forced between one-line abstract funs, etc.),
+            // mirroring the top-level declaration rule. A blank is still forced between different
+            // kinds and around multi-line members (handled by the clauses below). ktfmt forces a
+            // blank between every pair.
+            options.optofmt &&
+                curr.type == prev.type &&
+                isOneLineDeclaration(curr) &&
+                isOneLineDeclaration(prev) -> BlankLineWanted.PRESERVE
             prev.type != KtNodeTypes.PROPERTY -> BlankLineWanted.YES
             prev.meaningfulChildren().any { it.type == KtNodeTypes.PROPERTY_ACCESSOR } ->
                 BlankLineWanted.YES
@@ -946,6 +1045,21 @@ internal class KmpAstVisitor(
             if (bodyIsBlockLike) {
               builder.space()
               visit(body)
+            } else if (options.optofmt) {
+              // optofmt §1/§3: the branch `->` is an introducer, like `=`. Offer both arrangements
+              // and let §1 choose: attach the body to the `->` line (keeping a block-valued body such
+              // as `if (…) {` / `when {` opener attached, and any body that fits) or, when attaching
+              // would overflow, break after `->` with the body at one indent. Same treatment as an
+              // expression-body `=` (see visitFunctionLikeDeclaration) and a block-valued RHS (§3).
+              val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
+              val rhs = sink.capture { visit(body) }
+              val attached = sink.capture { sink.space(); sink.appendSubtree(rhs) }
+              val broken =
+                  sink.capture {
+                    sink.forcedBreak(expressionBreakIndent)
+                    sink.appendSubtree(rhs)
+                  }
+              sink.emitAlt(listOf(attached, broken))
             } else {
               block(expressionBreakIndent) {
                 builder.breakOp(FillMode.INDEPENDENT, " ", ZERO)
@@ -991,14 +1105,17 @@ internal class KmpAstVisitor(
   private fun visitTypeArgumentList(node: KmpNode) {
     sync(node)
     val args = node.meaningfulChildren().filter { it.type == KtNodeTypes.TYPE_PROJECTION }
-    // optofmt: a generic type-argument list is NOT a §4 wrappable list — it is kept whole, and the
-    // declaration wraps after the `=` introducer instead (see snippet `generic-type-arg-economy`).
+    // optofmt: a generic type-argument list is NOT a §4 wrappable list — it is kept whole (no break
+    // points), and an overflowing declaration wraps after its `=`/`:` introducer instead (see snippet
+    // `generic-type-arg-economy`). `breakable = false` stops the optimizer from tearing `Foo<A, B>`
+    // across lines just to attach an introducer (RULES §3/§4).
     visitEachCommaSeparated(
         list = args,
         hasTrailingComma = node.hasTrailingCommaAfter(args.lastOrNull()),
         prefix = "<",
         postfix = ">",
-        wrapInBlock = !options.manageTrailingCommas)
+        wrapInBlock = !options.manageTrailingCommas,
+        breakable = !options.optofmt)
   }
 
   private fun visitTypeProjection(node: KmpNode) {
@@ -1175,7 +1292,10 @@ internal class KmpAstVisitor(
           params,
           hasTrailingComma = paramList?.hasTrailingCommaAfter(params.lastOrNull()) ?: false,
           prefix = "(",
-          postfix = ")")
+          postfix = ")",
+          // A function TYPE's parameter list is part of a type, not a §4 wrappable list — keep it
+          // whole so the optimizer can't tear it to attach an introducer (RULES §3/§4).
+          breakable = !options.optofmt)
     }
     builder.space()
     emit("->")
@@ -1599,6 +1719,21 @@ internal class KmpAstVisitor(
       return
     }
 
+    // optofmt §1/§3: an assignment (`job = launch(args) { … }`, `x += foo()`) keeps the `=` introducer
+    // attached to its RHS opener, exactly like a `val`/property initializer (see [visitProperty]).
+    // Offer both arrangements and let §1 pick: attached wins when the RHS opener fits the `=` line
+    // (the common case — a call whose trailing lambda merely wraps its own body); break-after-`=` wins
+    // only when attaching would overflow. The generic operator path below instead breaks after `=`
+    // whenever the RHS is multiline (e.g. a trailing-lambda body), which violates §3.
+    val rhsExpr = node.binaryRight()
+    if (options.optofmt && opText in assignmentOps && rhsExpr != null) {
+      visit(node.binaryLeft())
+      builder.space()
+      emit(opText)
+      emitIntroducerRhs(rhsExpr) { visit(rhsExpr) }
+      return
+    }
+
     // Collect a left-associative run of the same operator.
     val parts = ArrayDeque<KmpNode>()
     var current: KmpNode? = node
@@ -1795,10 +1930,24 @@ internal class KmpAstVisitor(
             list.meaningfulChildren().any {
               it.type == KtTokens.COMMA && it.startOffset > lastArg.startOffset
             }
+    // §4 last-item expansion for a SINGLE argument: keep the call opener + the argument's own opener
+    // on one line and let the trailing lambda block hang (`call(x?.let {` … `})`), instead of fully
+    // splitting the sole argument one-per-line. ktfmt (gjf path) only hangs a *bare* lambda argument;
+    // optofmt additionally hangs an argument that is a scoping-function call ending in a lambda
+    // (`cause?.let {…}`, `x?.also {…}`, `run {…}`) — a very common Kotlin shape — via the same path.
+    // §4/§5: a sole unnamed argument that is itself block-like — a lambda, a scoping-function call
+    // (`x?.let {…}`), or an anonymous object (`object : Subscription {…}`) — hangs its block off the
+    // call opener (`onSubscribe(object : Subscription {` … `})`) with the closers stacked, instead of
+    // being pushed onto its own line and closed on another (which would drift the body a level and
+    // dangle the `)`). ktfmt only hangs a bare lambda; optofmt additionally hangs the scoping-call and
+    // object-expression shapes, which are just as block-like.
+    val soleArgExpr = arguments.singleOrNull()?.takeIf { it.child(KtNodeTypes.VALUE_ARGUMENT_NAME) == null }?.argumentExpression()
     val isSingleUnnamedLambda =
-        arguments.size == 1 &&
-            arguments.first().argumentExpression()?.type == KtNodeTypes.LAMBDA_EXPRESSION &&
-            arguments.first().child(KtNodeTypes.VALUE_ARGUMENT_NAME) == null
+        soleArgExpr != null &&
+            (soleArgExpr.type == KtNodeTypes.LAMBDA_EXPRESSION ||
+                (options.optofmt &&
+                    (isLambdaOrScopingFunction(soleArgExpr) ||
+                        soleArgExpr.type == KtNodeTypes.OBJECT_LITERAL)))
 
     val wrapInBlock: Boolean
     val breakBeforePostfix: Boolean
@@ -1851,6 +2000,20 @@ internal class KmpAstVisitor(
       builder.space()
       emit("=")
       if (isLambda) builder.space()
+    }
+    // optofmt §3/§6: keep the `name =` introducer attached to its value — the first operand stays on
+    // the `=` line when it fits and the value wraps its own contents (a `+` concat at a single indent,
+    // a call's args one-per-line) — rather than breaking after `=`. Offer both arrangements and let §1
+    // pick (attach unless the opener overflows). The plain-fill path below instead breaks after `=`
+    // whenever the value's flat form is long, even when the first operand would fit (§6), and drifts
+    // the value a second indent level (§2). Same treatment as [visitProperty]/assignments.
+    if (options.optofmt && hasArgName && !isLambda && exprNode != null) {
+      val hasStar = argument.meaningfulChildren().any { it.type == KtTokens.MUL }
+      emitIntroducerRhs(exprNode) {
+        if (hasStar) emit("*")
+        visit(exprNode)
+      }
+      return
     }
     val indent = if (hasArgName && !isLambda) expressionBreakIndent else ZERO
     block(indent, isEnabled = wrapInBlock) {
@@ -2001,12 +2164,39 @@ internal class KmpAstVisitor(
     val parts = breakIntoParts(expression)
     val useBlockLikeLambdaStyle = parts.last().isLambdaPart() && parts.count { it.isLambdaPart() } == 1
     val groupingInfos = computeGroupingInfo(parts, useBlockLikeLambdaStyle)
+    // optofmt §1/§7: a trailing lambda on a call that stays grouped on the receiver's intro line
+    // (`recv.first(x) { … }.tail()`) forces the whole chain multiline via the lambda's own body
+    // breaks — even though the chain itself is not "too long for one line". Its trailing `.calls`
+    // should stay attached to the lambda's `}` when they fit (`}.join()`), and only split one-per-line
+    // when they genuinely overflow (§7). We achieve this by emitting the breaks *after* such a part as
+    // INDEPENDENT (fill) rather than UNIFIED: in the forced-broken chain level, a fill break fires only
+    // when the run to the next break won't fit, so the tail attaches when it fits and breaks when it
+    // doesn't. `groupedLambdaEnd` is the index of that call part (−1 if none).
+    val groupedLambdaEnd =
+        if (!options.optofmt) -1
+        else
+            parts.indices.lastOrNull { index ->
+              val part = parts[index]
+              (part.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
+                  part.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) &&
+                  index != parts.size - 1 &&
+                  groupingInfos[index].shouldCloseGroup &&
+                  part.qualifiedSelector()?.let { sel ->
+                    sel.type == KtNodeTypes.CALL_EXPRESSION &&
+                        sel.meaningfulChildren().any { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
+                  } == true
+            } ?: -1
     block(expressionBreakIndent) {
       val nameTag = genSym()
       for ((index, part) in parts.withIndex()) {
         if (part.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
             part.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) {
-          builder.breakOp(FillMode.UNIFIED, "", ZERO, Optional.of(nameTag))
+          if (index > groupedLambdaEnd && groupedLambdaEnd >= 0) {
+            // Tail `.call` after a grouped multiline lambda: fill, so it attaches to `}` when it fits.
+            builder.breakOp(FillMode.INDEPENDENT, "", ZERO)
+          } else {
+            builder.breakOp(FillMode.UNIFIED, "", ZERO, Optional.of(nameTag))
+          }
         }
         repeat(groupingInfos[index].groupOpenCount) { builder.open(ZERO) }
         when (part.type) {
@@ -2022,9 +2212,26 @@ internal class KmpAstVisitor(
               if (groupingInfos[index].shouldCloseGroup) builder.close()
               val isTrailingLambda = useBlockLikeLambdaStyle && index == parts.size - 1
               if (isTrailingLambda) builder.close()
+              // optofmt §2/§7: a trailing lambda on a NON-final call part that stays grouped on the
+              // receiver's intro line (`GlobalScope.launch(…) { … }.join()`) would otherwise stack the
+              // chain's continuation indent (+1) under the lambda's own block indent (+1), drifting the
+              // body a second level right and the `}` one level too deep. When the chain breaks, cancel
+              // the chain indent for this call element so the body sits exactly one level below the
+              // receiver line and the `}` at the receiver's indent. (A non-grouped part sits on its own
+              // broken `.call` line, where the body is already one level below it — no pullback.)
+              val midChainLambdaGrouped = index == groupedLambdaEnd
               val argsIndentElse = if (index == parts.size - 1) ZERO else expressionBreakIndent
               val lambdaIndentElse = if (isTrailingLambda) expressionBreakNegativeIndent else ZERO
               val negLambdaIndentElse = if (isTrailingLambda) expressionBreakIndent else ZERO
+              // A grouped mid-chain lambda always forces the chain to break (its body carries forced
+              // breaks), so the pullback can be an unconditional constant: -1 level cancels the chain's
+              // continuation indent for this call element. It can't be an `Indent.If` on [nameTag] here
+              // — the native engine evaluates a level's indent at cost time, but the `.call` break that
+              // sets [nameTag] is walked *after* this part, so [nameTag] is unset when this indent is
+              // measured/captured.
+              val lambdaIndent =
+                  if (midChainLambdaGrouped) expressionBreakNegativeIndent
+                  else Indent.If.make(nameTag, ZERO, lambdaIndentElse)
               visitCallElement(
                   callee = null,
                   typeArgumentList = selector.child(KtNodeTypes.TYPE_ARGUMENT_LIST),
@@ -2032,7 +2239,7 @@ internal class KmpAstVisitor(
                   lambdaArguments =
                       selector.meaningfulChildren().filter { it.type == KtNodeTypes.LAMBDA_ARGUMENT },
                   argumentsIndent = Indent.If.make(nameTag, expressionBreakIndent, argsIndentElse),
-                  lambdaIndent = Indent.If.make(nameTag, ZERO, lambdaIndentElse),
+                  lambdaIndent = lambdaIndent,
                   negativeLambdaIndent = Indent.If.make(nameTag, ZERO, negLambdaIndentElse),
               )
             }
@@ -2176,18 +2383,23 @@ internal class KmpAstVisitor(
       // optofmt §4: a fully split list puts its closing delimiter on its own line even though no
       // trailing comma is emitted; ktfmt only breaks before the closer when it manages commas.
       breakBeforePostfix: Boolean = options.manageTrailingCommas || options.optofmt,
+      // When false, the list is emitted WHOLE — no break points at all, items joined by ", ". Used for
+      // constructs that RULES §4 does not treat as wrappable (a generic type-argument list): the
+      // optimizer must not tear them across lines; an overflowing declaration wraps elsewhere.
+      breakable: Boolean = true,
   ): BreakTag? {
     // optofmt §4: never emit a trailing comma, and don't let a source one force the split — ignore
     // it entirely so the list is laid out compact-or-fully-split on its own merits. Only on the
     // optofmt (native engine) path only: on the gjf path every source token must be emitted (gjf
     // matches the input token stream), so dropping the comma there would throw.
     val hasTrailingComma = hasTrailingComma && !options.optofmt
-    val breakAfterLastElement = hasTrailingComma || (postfix != null && breakBeforePostfix)
+    val breakAfterLastElement =
+        breakable && (hasTrailingComma || (postfix != null && breakBeforePostfix))
     val nameTag = if (breakAfterLastElement) null else genSym()
 
     if (prefix != null) {
       emit(prefix)
-      if (breakAfterPrefix) {
+      if (breakAfterPrefix && breakable) {
         builder.breakOp(FillMode.UNIFIED, "", ZERO, Optional.ofNullable(nameTag))
       }
     }
@@ -2195,12 +2407,12 @@ internal class KmpAstVisitor(
     val breakType = if (hasTrailingComma) FillMode.FORCED else FillMode.UNIFIED
     fun emitComma() {
       emit(",")
-      builder.breakOp(breakType, " ", ZERO)
+      if (breakable) builder.breakOp(breakType, " ", ZERO) else builder.space()
     }
 
     val indent = if (leadingBreak) ZERO else expressionBreakNegativeIndent
     block(indent, isEnabled = wrapInBlock) {
-      if (leadingBreak) builder.breakOp(breakType, "", ZERO)
+      if (leadingBreak && breakable) builder.breakOp(breakType, "", ZERO)
       var first = true
       for (value in list) {
         if (!first) emitComma()
