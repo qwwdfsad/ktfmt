@@ -265,6 +265,14 @@ class NativeSink(
   /** Append an already-built subtree to the current level. */
   internal fun appendSubtree(node: NDoc) = add(node)
 
+  /**
+   * Emit literal text WITHOUT advancing the source-token cursor. Unlike [token]/`emit`, this does not
+   * try to match (and consume) a source leaf, so it is safe for punctuation synthesized between
+   * already-captured subtrees — e.g. the `,` separators when composing a supertype list from
+   * per-entry captures whose inter-entry commas were already consumed during capture.
+   */
+  internal fun literal(text: String) = add(NText(text))
+
   /** Offer competing candidate layouts; the renderer keeps the lowest-§1-cost one (see [NAlt]). */
   internal fun emitAlt(alternatives: List<NDoc>) = add(NAlt(alternatives))
 

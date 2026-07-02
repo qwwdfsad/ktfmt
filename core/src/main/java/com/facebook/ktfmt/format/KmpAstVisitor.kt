@@ -534,10 +534,13 @@ internal class KmpAstVisitor(
     sync(list)
     // §9 scopes the "annotation-with-args on its own line" treatment to annotations *directly above
     // a declaration*. This same modifier-list walk also runs for parameter modifier lists (a value
-    // parameter, a `catch` parameter, a lambda parameter), where §9's own example keeps the
-    // annotation inline (`@PublishedApi internal val flow: …`). So only force the own-line break for
+    // parameter, a `catch` parameter, a lambda parameter) and for a *type* parameter (`<@Ann T>`),
+    // where §9's own example keeps the annotation inline (`@PublishedApi internal val flow: …`) and a
+    // compact header (`fun <@Ann T> …`) must not explode. So only force the own-line break for
     // declaration modifier lists, not parameter ones.
-    val isParameterModifiers = list.parent()?.type == KtNodeTypes.VALUE_PARAMETER
+    val parentType = list.parent()?.type
+    val isParameterModifiers =
+        parentType == KtNodeTypes.VALUE_PARAMETER || parentType == KtNodeTypes.TYPE_PARAMETER
     // optofmt §9: an annotation goes on its OWN line if it carries arguments (`@JvmName("other")`,
     // `@Suppress("…")`, `@Deprecated(...)`) or is a non-modifier-like annotation (`@Test`); only
     // argument-less *modifier-like* annotations (`@PublishedApi`, `@JvmStatic`, …) stay inline.
@@ -618,8 +621,31 @@ internal class KmpAstVisitor(
    * double-wrapped, and its break stays unpenalized so §7 keeps the receiver-through-first-call
    * intact rather than tearing it to attach.
    */
+  /**
+   * True if [node] is immediately preceded (ignoring whitespace) by a comment — a comment the author
+   * placed on its own line above [node]. Mirrors the guard in [isLambdaOrScopingFunction].
+   */
+  private fun hasLeadingComment(node: KmpNode): Boolean {
+    var prev = node.prevSibling()
+    while (prev != null && prev.type in KtTokens.WHITESPACES) prev = prev.prevSibling()
+    return prev != null && prev.type in KtTokens.COMMENTS
+  }
+
   private fun emitIntroducerRhs(rhsExpr: KmpNode?, buildRhs: () -> Unit) {
     val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
+    // §8: a comment authored on its own line between the introducer and its RHS must stay on its own
+    // line. Offering the attached candidate would let §1 hoist it onto the introducer line (that
+    // layout has fewer lines) and — because the attached RHS carries no enclosing indent block —
+    // indent the body at the introducer's level instead of one deeper. Force the break-after-
+    // introducer arrangement inside a `block(expressionBreakIndent)` so the comment and the body
+    // both sit one indent past the introducer.
+    if (rhsExpr != null && hasLeadingComment(rhsExpr)) {
+      block(expressionBreakIndent) {
+        sink.forcedBreak(ZERO)
+        buildRhs()
+      }
+      return
+    }
     val rhs = sink.capture(buildRhs)
     val attached = sink.capture { sink.space(); sink.appendSubtree(rhs) }
     val broken =
@@ -739,23 +765,52 @@ internal class KmpAstVisitor(
         block(ZERO) {
           emit(":")
           if (options.optofmt) {
-            // optofmt §1/§3: offer BOTH legal arrangements of `: <supertypes>` and let the optimizer
-            // keep whichever has the lower §1 cost:
-            //   attached — `: DumpFileCommand(` on the header line, only the supertype's own argument
-            //              list wrapping (RULES §3 supertype attachment; wins when the header fits);
-            //   broken   — break after `:`, the supertype whole on the next line at one indent (wins
-            //              when attaching would overflow the header, e.g. a long primary constructor).
-            // Attaching is not applied unconditionally: §1 (minimize worst overflow) must be able to
-            // override §3 when the attached header would overflow. The subtree is built once, shared.
+            // optofmt §1/§3/§4: offer TWO legal arrangements of `: <supertypes>` and let the
+            // optimizer keep whichever has the lower §1 cost:
+            //   attachedWhole — `: A, B(` on the header line, entries joined by ", ", with a trailing
+            //                   supertype-call's own argument list free to wrap (§3 attachment + §5
+            //                   indent economy). Chosen whenever the whole list fits on the header
+            //                   line (possibly with that call's args wrapping).
+            //   split         — break after `:` and put EACH supertype on its own line at one indent
+            //                   (§4: a comma list is compact or one-per-line, never an overflowing
+            //                   single line). Chosen only when the whole list can't fit on the header
+            //                   line; the introducer break is penalized so `attachedWhole` wins ties.
+            // Each entry is captured ONCE (the inter-entry source commas are consumed during that
+            // capture) and reused in both arrangements, so the source-token cursor advances only once.
             val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
-            val supers = sink.capture { visit(superTypes) }
-            val attached = sink.capture { sink.space(); sink.appendSubtree(supers) }
-            val broken =
-                sink.capture {
-                  sink.forcedIntroducerBreak(expressionBreakIndent)
-                  sink.appendSubtree(supers)
+            val entries =
+                superTypes.meaningfulChildren().filter {
+                  it.type == KtNodeTypes.SUPER_TYPE_ENTRY ||
+                      it.type == KtNodeTypes.SUPER_TYPE_CALL_ENTRY ||
+                      it.type == KtNodeTypes.DELEGATED_SUPER_TYPE_ENTRY
                 }
-            sink.emitAlt(listOf(attached, broken))
+            val entryDocs = entries.map { entry -> sink.capture { visit(entry) } }
+            val attachedWhole =
+                sink.capture {
+                  sink.space()
+                  entryDocs.forEachIndexed { i, doc ->
+                    if (i != 0) {
+                      sink.literal(",")
+                      sink.space()
+                    }
+                    sink.appendSubtree(doc)
+                  }
+                }
+            val split =
+                sink.capture {
+                  block(expressionBreakIndent) {
+                    entryDocs.forEachIndexed { i, doc ->
+                      if (i == 0) {
+                        sink.forcedIntroducerBreak(ZERO)
+                      } else {
+                        sink.literal(",")
+                        sink.forcedBreak(ZERO)
+                      }
+                      sink.appendSubtree(doc)
+                    }
+                  }
+                }
+            sink.emitAlt(listOf(attachedWhole, split))
           } else {
             builder.breakOp(FillMode.UNIFIED, " ", expressionBreakIndent)
             visit(superTypes)
