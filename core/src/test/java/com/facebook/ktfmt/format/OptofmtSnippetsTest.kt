@@ -158,6 +158,179 @@ runsByTeamId.applyEvent(state)
 }""",
       )
 
+  /**
+   * §7: in a member-access chain, each subsequent `.call` sits on its own line — never filled
+   * several per line — even when every call carries its own trailing lambda. Regression: the
+   * grouped-lambda tail-attach path (for `}.join()`-style lambda-free tails) was filling these
+   * lambda-bearing `.applyIf(…) { … }` calls, packing multiple per line and overflowing.
+   */
+  @Test
+  fun `call-chain-of-trailing-lambdas`() =
+      check(
+          input =
+              """
+public fun Flow<ContestUpdate>.addComputedData(configure: ComputedDataConfig.() -> Unit = {}): Flow<ContestUpdate> {
+    val config = ComputedDataConfig().apply(configure)
+    return this.applyIf(config.autoCreateMissingGroups) { autoCreateMissingGroupsAndOrgs() }.applyIf(!config.submissionResultsAfterFreeze) { removeFrozenSubmissionsResults() }.applyIf(!config.submissionsAfterEnd) { removeAfterEndSubmissions() }.applyIf(config.unhideColorWhenSolved) { selectProblemColors() }.applyIf(config.propagateHidden) { hideHiddenGroupsTeams() }.applyIf(config.propagateHidden) { hideHiddenTeamsRuns() }.applyIf(config.propagateHidden) { hideHiddenProblemsRuns() }.applyIf(config.propagateRunMediaTemplates) { propagateRunMediaTemplates() }.applyIf(config.ioiScoreDifferences) { calculateScoreDifferences() }.applyIf(config.markSubmissionsAfterFirstOk) { markSubmissionAfterFirstOk() }.applyIf(config.firstToSolves) { addFirstToSolves() }.applyIf(config.replaceCommentaryTags) { processCommentaryTags() }.applyIf(config.autoFinalize) { autoFinalize() }
+}""",
+          expected =
+              """public fun Flow<ContestUpdate>.addComputedData(
+    configure: ComputedDataConfig.() -> Unit = {}
+): Flow<ContestUpdate> {
+    val config = ComputedDataConfig().apply(configure)
+    return this.applyIf(config.autoCreateMissingGroups) { autoCreateMissingGroupsAndOrgs() }
+        .applyIf(!config.submissionResultsAfterFreeze) { removeFrozenSubmissionsResults() }
+        .applyIf(!config.submissionsAfterEnd) { removeAfterEndSubmissions() }
+        .applyIf(config.unhideColorWhenSolved) { selectProblemColors() }
+        .applyIf(config.propagateHidden) { hideHiddenGroupsTeams() }
+        .applyIf(config.propagateHidden) { hideHiddenTeamsRuns() }
+        .applyIf(config.propagateHidden) { hideHiddenProblemsRuns() }
+        .applyIf(config.propagateRunMediaTemplates) { propagateRunMediaTemplates() }
+        .applyIf(config.ioiScoreDifferences) { calculateScoreDifferences() }
+        .applyIf(config.markSubmissionsAfterFirstOk) { markSubmissionAfterFirstOk() }
+        .applyIf(config.firstToSolves) { addFirstToSolves() }
+        .applyIf(config.replaceCommentaryTags) { processCommentaryTags() }
+        .applyIf(config.autoFinalize) { autoFinalize() }
+}""",
+      )
+
+  /**
+   * §7 with a lowercase receiver: the receiver-through-first-call stays on the introducer's line
+   * regardless of the receiver's name/casing, then each subsequent `.step` wraps to its own line.
+   * Matches report.md's `chain-lambda-steps`. Regression: the receiver `repository` was being
+   * broken onto its own line (only short/uppercase/`this` receivers used to group).
+   */
+  @Test
+  fun `chain-lambda-steps`() =
+      check(
+          input =
+              """fun f() { val result = repository.query(Filter.byStatus(Status.ACTIVE)).paginate(pageNumber, pageSize).mapEach { it.toDto(includeMetadata = true) } }""",
+          expected =
+              """fun f() {
+    val result = repository.query(Filter.byStatus(Status.ACTIVE))
+        .paginate(pageNumber, pageSize)
+        .mapEach { it.toDto(includeMetadata = true) }
+}""",
+      )
+
+  /**
+   * §7 + §1: `worker.execute(…) { … }.result` — the chain is multiline only because of the trailing
+   * lambda's block body, not because it overflows. The receiver-through-first-call
+   * (`worker.execute(…) {`) stays on one line and the lambda-free tail `.result` attaches to the
+   * closing `}` (§1/§7 tail-attach), rather than exploding `worker` and `.result` onto their own
+   * lines. From kotlinx.coroutines WorkerTest.kt:14.
+   */
+  @Test
+  fun `chain-trailing-lambda-tail-property`() =
+      check(
+          input =
+              """
+class WorkerTest {
+    fun testLaunchInWorker() {
+        val worker = Worker.start()
+        worker.execute(TransferMode.SAFE, {}) { runBlocking { launch {}.join(); delay(1) } }.result
+        worker.requestTermination()
+    }
+}""",
+          expected =
+              """class WorkerTest {
+    fun testLaunchInWorker() {
+        val worker = Worker.start()
+        worker.execute(TransferMode.SAFE, {}) {
+            runBlocking {
+                launch {}.join()
+                delay(1)
+            }
+        }.result
+        worker.requestTermination()
+    }
+}""",
+      )
+
+  /**
+   * §2/§3: an expression body `= runBlocking { … }` whose header is too long to attach the opener
+   * breaks after `=` and puts `runBlocking {` on its own line — the lambda body must then indent one
+   * level deeper than `runBlocking` (§2 one level per step), not sit at the same column. From
+   * kotlinx.coroutines WithTimeoutThreadDispatchTest.kt:56. Regression: the broken scoping-function
+   * body was under-indented by one level (the native engine can't resolve the `Indent.If` on the
+   * brace-break tag that the old code used).
+   */
+  @Test
+  fun `scoping-function-expression-body-break-after-eq`() =
+      check(
+          input =
+              """
+class C {
+    private fun checkCancellationDispatch(factory: (ThreadFactory) -> CoroutineDispatcher) = runBlocking { expect(1); finish(2) }
+}""",
+          expected =
+              """class C {
+    private fun checkCancellationDispatch(factory: (ThreadFactory) -> CoroutineDispatcher) =
+        runBlocking {
+            expect(1)
+            finish(2)
+        }
+}""",
+      )
+
+  /**
+   * §1: a type cast (`… as T`) whose left operand is a multiline scoping block (`apply { … }`) is
+   * multiline because of the block's own body, not because the cast overflows — so `as T` stays
+   * attached to the closing `}` (`} as T`) rather than dropping to its own line. From Exposed
+   * AbstractQuery.kt:95. Regression: `as` was always breaking before the operator when the enclosing
+   * level wrapped, dangling `as T` on its own line at the wrong indent.
+   */
+  @Test
+  fun `type-cast-attaches-to-multiline-scoping-block`() =
+      check(
+          input =
+              """
+class AbstractQuery<T> {
+    open fun withDistinct(value: Boolean = true): T = apply {
+        require(distinctOn == null) { "DISTINCT cannot be used with the DISTINCT ON modifier." }
+        distinct = value
+    } as T
+}""",
+          expected =
+              """class AbstractQuery<T> {
+    open fun withDistinct(value: Boolean = true): T = apply {
+        require(distinctOn == null) { "DISTINCT cannot be used with the DISTINCT ON modifier." }
+        distinct = value
+    } as T
+}""",
+      )
+
+  /**
+   * §7: when a chain's receiver is ITSELF a call (`QueryBuilder(false)`), that base call is already
+   * "the first call" — so it stays attached to the `=` introducer (§7 "don't break after `=`") and
+   * each subsequent `.call` (`.also { … }`, `.toString()`) breaks to its own line at one indent, all
+   * at the same single level (no drift). From Exposed AdjustQueryTests.kt:61. Regression: the base
+   * call was being grouped with its first `.member`, forcing a needless break after `=`.
+   */
+  @Test
+  fun `chain-with-call-receiver-keeps-base-on-introducer`() =
+      check(
+          input =
+              """
+class C {
+    fun testAdjustQueryColumnSet() {
+        withCitiesAndUsers { cities, users, _ ->
+            fun ColumnSet.repr(): String = QueryBuilder(false).also { this.describe(TransactionManager.current(), it) }.toString()
+        }
+    }
+}""",
+          expected =
+              """class C {
+    fun testAdjustQueryColumnSet() {
+        withCitiesAndUsers { cities, users, _ ->
+            fun ColumnSet.repr(): String = QueryBuilder(false)
+                .also { this.describe(TransactionManager.current(), it) }
+                .toString()
+        }
+    }
+}""",
+      )
+
   @Test
   fun `trailing-lambda`() =
       check(

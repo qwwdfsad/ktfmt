@@ -504,8 +504,39 @@ internal class KmpAstVisitor(
   }
 
   private fun visitLambdaOrScopingFunction(node: KmpNode?) {
+    if (options.optofmt) {
+      // §2/§3: mirror emitIntroducerRhs. Build the scoping RHS once with a DETERMINISTIC body indent
+      // (brokeBeforeBrace = null → the lambda body sits at blockIndent relative to its enclosing
+      // level), then offer attached vs. broken candidates via emitAlt and let §1 pick. The gjf path
+      // below keys the body indent off an `Indent.If` on the brace-break tag; the native engine
+      // evaluates a level's indent at cost time (before/independently of that tag being marked taken),
+      // so a broken `= runBlocking {` under-indented its body by one level. The broken candidate here
+      // wraps the RHS in `block(expressionBreakIndent)` so the body indents from the break column.
+      val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
+      val rhs = sink.capture { emitScopingCall(node, brokeBeforeBrace = null) }
+      val attached = sink.capture { sink.space(); sink.appendSubtree(rhs) }
+      val broken =
+          sink.capture {
+            block(expressionBreakIndent) {
+              sink.forcedIntroducerBreak(ZERO)
+              sink.appendSubtree(rhs)
+            }
+          }
+      sink.emitAlt(listOf(attached, broken))
+      return
+    }
     val breakToExpr = genSym()
     builder.breakOp(FillMode.INDEPENDENT, " ", expressionBreakIndent, Optional.of(breakToExpr))
+    emitScopingCall(node, brokeBeforeBrace = breakToExpr)
+  }
+
+  /**
+   * Emit a scoping-function RHS — the receiver/callee chain then its trailing lambda (`runBlocking {
+   * … }`, `x.let { … }`, `run@ { … }`). [brokeBeforeBrace] tags the lambda's brace break so a body
+   * hanging off a broken introducer line can add an indent level (gjf path); the optofmt path passes
+   * null and controls the indent via an enclosing block instead.
+   */
+  private fun emitScopingCall(node: KmpNode?, brokeBeforeBrace: BreakTag?) {
     var carry = node ?: return
     if ((carry.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
         carry.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) &&
@@ -526,7 +557,7 @@ internal class KmpAstVisitor(
       carry = carry.meaningfulChildren().lastOrNull { it.type != KtNodeTypes.LABEL_QUALIFIER } ?: return
     }
     if (carry.type == KtNodeTypes.LAMBDA_EXPRESSION) {
-      visitLambdaExpressionInternal(carry, brokeBeforeBrace = breakToExpr)
+      visitLambdaExpressionInternal(carry, brokeBeforeBrace)
     }
   }
 
@@ -1307,8 +1338,13 @@ internal class KmpAstVisitor(
     visit(left)
     if (!openBeforeLeft) builder.open(ZERO)
     if (node.type == KtNodeTypes.BINARY_WITH_TYPE) {
-      // `as` / `as?` always breaks before the operator.
-      builder.breakOp(FillMode.UNIFIED, " ", expressionBreakIndent)
+      // `as` / `as?` breaks before the operator. optofmt §1 ("don't wrap if it fits"): use a fill
+      // break so `as T` stays attached to the left operand's last line when it fits — most notably
+      // `} as T` after a multiline `apply { … }` / scoping block (which is multiline because of its
+      // own body, not because the cast is too long) — and only drops to its own line when the cast
+      // genuinely overflows. ktfmt (gjf path) always breaks before the operator when the level wraps.
+      builder.breakOp(
+          if (options.optofmt) FillMode.INDEPENDENT else FillMode.UNIFIED, " ", expressionBreakIndent)
     } else {
       // `is` / `!is`: break only in argument-like positions.
       val parentType = node.parent()?.type
@@ -2219,6 +2255,12 @@ internal class KmpAstVisitor(
     val parts = breakIntoParts(expression)
     val useBlockLikeLambdaStyle = parts.last().isLambdaPart() && parts.count { it.isLambdaPart() } == 1
     val groupingInfos = computeGroupingInfo(parts, useBlockLikeLambdaStyle)
+    // A `.call { … }` whose selector carries a trailing lambda.
+    fun partHasTrailingLambda(part: KmpNode): Boolean =
+        part.qualifiedSelector()?.let { sel ->
+          sel.type == KtNodeTypes.CALL_EXPRESSION &&
+              sel.meaningfulChildren().any { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
+        } == true
     // optofmt §1/§7: a trailing lambda on a call that stays grouped on the receiver's intro line
     // (`recv.first(x) { … }.tail()`) forces the whole chain multiline via the lambda's own body
     // breaks — even though the chain itself is not "too long for one line". Its trailing `.calls`
@@ -2236,18 +2278,18 @@ internal class KmpAstVisitor(
                   part.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) &&
                   index != parts.size - 1 &&
                   groupingInfos[index].shouldCloseGroup &&
-                  part.qualifiedSelector()?.let { sel ->
-                    sel.type == KtNodeTypes.CALL_EXPRESSION &&
-                        sel.meaningfulChildren().any { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
-                  } == true
+                  partHasTrailingLambda(part)
             } ?: -1
     block(expressionBreakIndent) {
       val nameTag = genSym()
       for ((index, part) in parts.withIndex()) {
         if (part.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
             part.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) {
-          if (index > groupedLambdaEnd && groupedLambdaEnd >= 0) {
-            // Tail `.call` after a grouped multiline lambda: fill, so it attaches to `}` when it fits.
+          // Tail `.call` after a grouped multiline lambda attaches to `}` via a fill break — BUT only
+          // when it is itself a simple, lambda-free call (`}.join()`, `}.asFlow().flowOn(x)`). A tail
+          // call that carries its OWN trailing lambda is a full chain `.call` in the §7 sense and must
+          // sit on its own line (never filled/packed several per line), so it stays UNIFIED.
+          if (index > groupedLambdaEnd && groupedLambdaEnd >= 0 && !partHasTrailingLambda(part)) {
             builder.breakOp(FillMode.INDEPENDENT, "", ZERO)
           } else {
             builder.breakOp(FillMode.UNIFIED, "", ZERO, Optional.of(nameTag))
@@ -2375,6 +2417,19 @@ internal class KmpAstVisitor(
       current: KmpNode,
   ): Boolean {
     val isDotQualified = part.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION
+    // optofmt §7: keep the receiver through its first call on the introducer's line — the first
+    // `.call(...)` groups with its receiver no matter the receiver's name/casing (e.g.
+    // `repository.query(…)`, `worker.execute(…) { … }`), then each subsequent `.call`/`.property`
+    // wraps to its own line. (ktfmt's Google-style heuristic below only groups short/uppercase/`this`
+    // receivers.) But when the receiver is ITSELF a call (`QueryBuilder(false).also { … }`), that base
+    // call is already "the first call" — so `.also` must NOT group; it breaks to its own line and the
+    // base stays attached to the introducer (`= QueryBuilder(false)` on the `=` line, §7 "don't break
+    // after =").
+    if (options.optofmt &&
+        index == 1 &&
+        current.type == KtNodeTypes.CALL_EXPRESSION &&
+        previous.type != KtNodeTypes.CALL_EXPRESSION)
+        return true
     if (index == 1 && previous.text.length < options.continuationIndent) return true
     if (previous.type == KtNodeTypes.SUPER_EXPRESSION || previous.type == KtNodeTypes.THIS_EXPRESSION)
         return true
