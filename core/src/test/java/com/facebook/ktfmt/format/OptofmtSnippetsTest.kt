@@ -94,6 +94,25 @@ class OptofmtSnippetsTest {
 )""",
       )
 
+  /**
+   * §3: `by` is an introducer just like `=`. When a property delegate is too long to fit, `by` stays
+   * attached to the delegate expression and the delegate's own contents (its call arguments) wrap;
+   * optofmt does NOT break after `by` into a fresh indented block. Regression: `by` used to drop the
+   * delegate onto its own line.
+   */
+  @Test
+  fun `delegate-by-introducer-attached`() =
+      check(
+          input =
+              """val config: Configuration by provideDelegateForConfiguration(firstArgumentHere, secondArgumentHere, third)""",
+          expected =
+              """val config: Configuration by provideDelegateForConfiguration(
+    firstArgumentHere,
+    secondArgumentHere,
+    third,
+)""",
+      )
+
   @Test
   fun `supertype-attached`() =
       check(

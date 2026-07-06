@@ -246,6 +246,11 @@ internal class KmpAstVisitor(
           if (isLambdaOrScopingFunction(delegateExpr)) {
             builder.space()
             visit(delegateExpr)
+          } else if (options.optofmt) {
+            // optofmt §3: `by` is an introducer, exactly like `=`. Keep it attached to the delegate
+            // and wrap the delegate's own contents, rather than breaking after `by` into a fresh
+            // indented block.
+            emitIntroducerRhs(delegateExpr) { visit(delegateExpr) }
           } else {
             builder.breakOp(FillMode.UNIFIED, " ", expressionBreakIndent)
             block(expressionBreakIndent) {
