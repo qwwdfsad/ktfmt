@@ -916,6 +916,22 @@ typealias MessageId = StrongId<MessageTag>""",
 }""",
       )
 
+  /**
+   * §6: an elvis `?:` stays on the same line as its left-hand side when the whole expression fits
+   * (§1); it only wraps (operator at the start of the continuation line) when it does not fit — see
+   * [`elvis-wrap`]. The break is a candidate, never forced.
+   */
+  @Test
+  fun `elvis-inline-when-fits`() {
+    check(input = """val name = findName() ?: error("missing")""", expected = """val name = findName() ?: error("missing")""")
+    check(
+        input =
+            """val displayName = lookupPreferredDisplayName(userId, localeSettings) ?: error("no display name is available for the requested user")""",
+        expected =
+            """val displayName = lookupPreferredDisplayName(userId, localeSettings)
+    ?: error("no display name is available for the requested user")""")
+  }
+
   @Test
   fun `annotation-placement`() =
       check(
