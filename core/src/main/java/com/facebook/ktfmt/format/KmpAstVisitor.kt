@@ -792,9 +792,9 @@ internal class KmpAstVisitor(
             // optofmt §1/§3/§4: offer TWO legal arrangements of `: <supertypes>` and let the
             // optimizer keep whichever has the lower §1 cost:
             //   attachedWhole — `: A, B(` on the header line, entries joined by ", ", with a trailing
-            //                   supertype-call's own argument list free to wrap (§3 attachment + §5
-            //                   indent economy). Chosen whenever the whole list fits on the header
-            //                   line (possibly with that call's args wrapping).
+            //                   supertype-call's own argument list free to wrap one-per-line (§3
+            //                   attachment + §4 arg wrapping). Chosen whenever the whole list fits on
+            //                   the header line (possibly with that call's args wrapping).
             //   split         — break after `:` and put EACH supertype on its own line at one indent
             //                   (§4: a comma list is compact or one-per-line, never an overflowing
             //                   single line). Chosen only when the whole list can't fit on the header
@@ -1959,19 +1959,18 @@ internal class KmpAstVisitor(
       lambdaIndent: Indent = ZERO,
       negativeLambdaIndent: Indent = ZERO,
   ) {
-    // optofmt §5 (indent economy): when this call's only argument is itself a call that must wrap,
-    // collapse the two openers onto one line and stack the closers (`add(OverrideQueue(` … `))`),
-    // so the nested groups share a single body indent instead of staircasing. We do this by
-    // suppressing this call's own argument indent and emitting the inner call transparently (no
-    // leading/trailing breaks); the inner call's parentheses then supply the one break level.
+    // optofmt §5: when this call's only argument is itself a call/constructor that must wrap, the
+    // outer call breaks after `(` and the inner call hangs on its own indented line (`add(` \n
+    // `OverrideQueue(` … `)` \n `)`) — the openers are NOT collapsed onto one line. The nested list
+    // keeps its own indent; a bare/named single block-like argument takes no outer trailing comma
+    // (handled in [visitValueArgumentListInternal]). The lambda/object hug (§4) still collapses.
     val argList =
         if (options.optofmt) argumentList?.meaningfulChildren().orEmpty().filter { it.type == KtNodeTypes.VALUE_ARGUMENT }
         else emptyList()
-    val collapseSoleCall = options.optofmt && isCollapsibleSoleCall(argList)
-    // §4 last-item expansion also needs the call's own argument indent suppressed: the hugging
-    // lambda supplies the single body indent, exactly like a trailing lambda outside the parens.
+    // §4 last-item expansion needs the call's own argument indent suppressed: the hugging lambda
+    // supplies the single body indent, exactly like a trailing lambda outside the parens.
     val hugLastLambda = options.optofmt && isLastArgUnnamedLambda(argList)
-    val effectiveArgumentsIndent = if (collapseSoleCall || hugLastLambda) ZERO else argumentsIndent
+    val effectiveArgumentsIndent = if (hugLastLambda) ZERO else argumentsIndent
     block(lambdaIndent) {
       var brokeBeforeBrace: BreakTag? = null
       block(negativeLambdaIndent) {
@@ -1979,8 +1978,7 @@ internal class KmpAstVisitor(
         block(effectiveArgumentsIndent) {
           if (typeArgumentList != null) block(ZERO) { visit(typeArgumentList) }
           if (argumentList != null)
-              brokeBeforeBrace =
-                  visitValueArgumentListInternal(argumentList, transparent = collapseSoleCall)
+              brokeBeforeBrace = visitValueArgumentListInternal(argumentList)
         }
       }
       if (lambdaArguments.size > 1) {
@@ -2000,10 +1998,14 @@ internal class KmpAstVisitor(
   private fun isOneLineDeclaration(node: KmpNode): Boolean = !node.text.contains('\n')
 
   /**
-   * True when [args] is exactly one argument (named or not) that is itself a call with a non-empty
-   * argument list — the shape optofmt §5 collapses (`outer(inner(args))`, or `outer(name = inner(args))`).
+   * True when [args] is exactly one argument (named or not) whose value is a call/constructor with
+   * its own non-empty argument list — a "block-like" sole argument (`outer(inner(args))` or
+   * `outer(name = inner(args))`). §5: optofmt does NOT collapse the openers for this shape; it breaks
+   * the outer call after `(`, hangs the argument on its own indented line, and lets the inner call
+   * wrap at its own indent. Because the outer call carries a single block-like value (not a
+   * one-per-line split), it takes NO outer trailing comma; the inner list wraps and commas normally.
    */
-  private fun isCollapsibleSoleCall(args: List<KmpNode>): Boolean {
+  private fun isSoleWrappingCallArg(args: List<KmpNode>): Boolean {
     val sole = args.singleOrNull() ?: return false
     val expr = sole.argumentExpression() ?: return false
     if (expr.type != KtNodeTypes.CALL_EXPRESSION) return false
@@ -2030,26 +2032,9 @@ internal class KmpAstVisitor(
     return true
   }
 
-  private fun visitValueArgumentListInternal(
-      list: KmpNode,
-      transparent: Boolean = false,
-  ): BreakTag? {
+  private fun visitValueArgumentListInternal(list: KmpNode): BreakTag? {
     sync(list)
     val arguments = list.meaningfulChildren().filter { it.type == KtNodeTypes.VALUE_ARGUMENT }
-    if (transparent) {
-      // §5: emit `( innerCall )` with no breaks and no indent of our own; the inner call wraps
-      // itself, so its openers join ours and its closers stack against ours.
-      return visitEachCommaSeparated(
-          arguments,
-          hasTrailingComma = false,
-          wrapInBlock = false,
-          breakBeforePostfix = false,
-          leadingBreak = false,
-          prefix = "(",
-          postfix = ")",
-          breakAfterPrefix = false,
-      )
-    }
 
     // optofmt §4 (last-item expansion): when the final argument is an unnamed lambda, keep the
     // leading arguments inline on the opener line and let the lambda expand in place, with the
@@ -2123,6 +2108,9 @@ internal class KmpAstVisitor(
       leadingBreak = !hasEmptyParens
       breakAfterPrefix = !hasEmptyParens
     }
+    // §5: a sole block-like call/constructor argument hangs on its own line without an outer
+    // trailing comma — it is one block-like value, not a one-per-line split.
+    val soleWrappingCall = options.optofmt && isSoleWrappingCallArg(arguments)
     return visitEachCommaSeparated(
         arguments,
         hasTrailingComma,
@@ -2132,7 +2120,7 @@ internal class KmpAstVisitor(
         prefix = "(",
         postfix = ")",
         breakAfterPrefix = breakAfterPrefix,
-        trailingCommaWhenBroken = true,
+        trailingCommaWhenBroken = !soleWrappingCall,
         // §4 custom formatting: a line break right after `(` keeps the arguments one-per-line.
         forceExpand =
             options.optofmt && !isSingleUnnamedLambda && list.hasLineBreakAfterOpener(KtTokens.LPAR),

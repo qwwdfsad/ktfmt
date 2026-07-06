@@ -60,28 +60,38 @@ class OptofmtSnippetsTest {
 }""",
       )
 
+  /**
+   * §5: a sole call/constructor argument that must wrap does NOT collapse its openers. The outer call
+   * breaks after `(`, the inner call hangs on its own indented line, and each `)` closes on its own
+   * line — a single block-like argument, so the OUTER call takes no trailing comma (the inner list
+   * commas normally, §14).
+   */
   @Test
   fun `indent-economy`() =
       check(
           input = """fun f() { add(OverrideQueue(queueSettings.waitTime, queueSettings.firstToSolveWaitTime, queueSettings.featuredRunWaitTime, queueSettings.inProgressRunWaitTime, queueSettings.maxQueueSize, queueSettings.maxUntestedRun)) }""",
           expected = """fun f() {
-    add(OverrideQueue(
-        queueSettings.waitTime,
-        queueSettings.firstToSolveWaitTime,
-        queueSettings.featuredRunWaitTime,
-        queueSettings.inProgressRunWaitTime,
-        queueSettings.maxQueueSize,
-        queueSettings.maxUntestedRun,
-    ))
+    add(
+        OverrideQueue(
+            queueSettings.waitTime,
+            queueSettings.firstToSolveWaitTime,
+            queueSettings.featuredRunWaitTime,
+            queueSettings.inProgressRunWaitTime,
+            queueSettings.maxQueueSize,
+            queueSettings.maxUntestedRun,
+        )
+    )
 }""",
       )
 
   @Test
   fun `indent-economy-extra-1-idempotent`() =
       idempotent("""fun f() {
-    registerHandler(buildHandler(
-        aLongUnbreakableArgumentIdentifierDeliberatelySizedToOverflowTheColumnLimitNoMatterWhatXY,
-    ))
+    registerHandler(
+        buildHandler(
+            aLongUnbreakableArgumentIdentifierDeliberatelySizedToOverflowTheColumnLimitNoMatterWhatXY,
+        )
+    )
 }""")
 
   @Test
