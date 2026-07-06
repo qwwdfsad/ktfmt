@@ -105,6 +105,33 @@ class OptofmtSnippetsTest {
       )
 
   /**
+   * §3: the supertype `:` is an introducer — it stays attached to the FIRST supertype even when the
+   * primary-constructor parameter list above it wrapped. The remaining supertypes then go one-per-line
+   * (§4). Regression: optofmt used to break after `:` (`) :\n    AbstractCoroutine(…)`).
+   * From kotlinx.coroutines Broadcast.kt:67.
+   */
+  @Test
+  fun `supertype-colon-attaches-first-after-wrapped-constructor`() =
+      check(
+          input =
+              """private open class BroadcastCoroutine<E>(parentContext: CoroutineContext, protected val _channel: BroadcastChannel<E>, active: Boolean) : AbstractCoroutine<Unit>(parentContext, initParentJob = false, active = active), ProducerScope<E>, BroadcastChannel<E> by _channel {
+    init { initParentJob(parentContext[Job]) }
+}""",
+          expected =
+              """private open class BroadcastCoroutine<E>(
+    parentContext: CoroutineContext,
+    protected val _channel: BroadcastChannel<E>,
+    active: Boolean,
+) : AbstractCoroutine<Unit>(parentContext, initParentJob = false, active = active),
+    ProducerScope<E>,
+    BroadcastChannel<E> by _channel {
+    init {
+        initParentJob(parentContext[Job])
+    }
+}""",
+      )
+
+  /**
    * §3: `by` is an introducer just like `=`. When a property delegate is too long to fit, `by` stays
    * attached to the delegate expression and the delegate's own contents (its call arguments) wrap;
    * optofmt does NOT break after `by` into a fresh indented block. Regression: `by` used to drop the
@@ -955,6 +982,59 @@ fun testSomething() {}""",
       check(
           input = """val placeOfGetter: String get() = "hello"""",
           expected = """val placeOfGetter: String get() = "hello"""",
+      )
+
+  /**
+   * §1/§3: an expression-bodied accessor stays attached to the property line even when its body is a
+   * multi-line block — `val x: T get() = lock.withLock {` keeps `get()` on the property line and hangs
+   * the block one indent in, rather than dropping `get()` onto its own line just because the body is
+   * multi-line. From kotlinx.coroutines BroadcastChannel.kt:358.
+   */
+  @Test
+  fun `block-valued-accessor-stays-on-property-line`() =
+      check(
+          input =
+              """class C<E> {
+    @Suppress("UNCHECKED_CAST")
+    val valueOrNull: E?
+        get() = lock.withLock {
+            if (isClosedForReceive) null
+            else if (lastConflatedElement === NO_ELEMENT) null
+            else lastConflatedElement as E
+        }
+}""",
+          expected =
+              """class C<E> {
+    @Suppress("UNCHECKED_CAST")
+    val valueOrNull: E? get() = lock.withLock {
+        if (isClosedForReceive) null
+        else if (lastConflatedElement === NO_ELEMENT) null else lastConflatedElement as E
+    }
+}""",
+      )
+
+  /**
+   * §2/§8: a comment on its own line before an accessor (`val x: T` / `// note` / `get() = …`) is a
+   * leading child of the accessor. It must stay on its own line (§8, not pulled up onto the type
+   * line) and the accessor sits ONE indent in under the property. Regression: optofmt pulled the
+   * comment up onto the `Boolean` line and put `get()` at the property level (indent 4, not 8), and
+   * the result was not even idempotent. From kotlinx.coroutines BroadcastChannel.kt:316.
+   */
+  @Test
+  fun `commented-property-accessor-indents-one-level`() =
+      check(
+          input =
+              """class C {
+    override val isClosedForSend: Boolean
+        // Protect by lock to synchronize with `close(..)` / `cancel(..)`.
+        get() = lock.withLock { super.isClosedForSend }
+}""",
+          expected =
+              """class C {
+    override val isClosedForSend: Boolean
+        // Protect by lock to synchronize with `close(..)` / `cancel(..)`.
+        get() = lock.withLock { super.isClosedForSend }
+}""",
       )
 
   @Test

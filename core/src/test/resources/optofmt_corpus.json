@@ -61,16 +61,31 @@
 },
 {
 "id": "block-rhs-extra-1",
-"input": null,
-"optofmt": "fun f() {\n    val builder = if (!builders.isEmpty()) {\n        builders.peek()\n    } else {\n        null\n    }\n}"
+"input": "fun f() {\nval teamsAffected: List<TeamId> = when (val event = state.lastEvent) {\nis CommentaryMessagesUpdate -> emptyList()\nis InfoUpdate -> info.teams.keys.toList()\nis RunUpdate -> {\nlastSubmissionTime = maxOf(lastSubmissionTime, event.newInfo.time)\nrunsByTeamId.applyEvent(state)\n}\n}\n}",
+"optofmt": "fun f() {\n    val teamsAffected: List<TeamId> = when (val event = state.lastEvent) {\n        is CommentaryMessagesUpdate -> emptyList()\n        is InfoUpdate -> info.teams.keys.toList()\n        is RunUpdate -> {\n            lastSubmissionTime = maxOf(lastSubmissionTime, event.newInfo.time)\n            runsByTeamId.applyEvent(state)\n        }\n    }\n}"
 },
 {
 "id": "block-rhs-extra-2",
 "input": null,
-"optofmt": "fun <T> f(block: () -> T): T? {\n    var thrown: Throwable? = null\n    val result = try {\n        block()\n    } catch (t: Throwable) {\n        thrown = t\n        null\n    } finally {\n        cleanup()\n    }\n    return result\n}"
+"optofmt": "fun f() {\n    val builder = if (!builders.isEmpty()) {\n        builders.peek()\n    } else {\n        null\n    }\n}"
 },
 {
 "id": "block-rhs-extra-3",
+"input": "fun f() {\nval builder: InstructionBuilder? = if (!builders.isEmpty()) {\nbuilders.peek()\n} else {\nnull\n}\n}",
+"optofmt": "fun f() {\n    val builder: InstructionBuilder? = if (!builders.isEmpty()) {\n        builders.peek()\n    } else {\n        null\n    }\n}"
+},
+{
+"id": "block-rhs-extra-4",
+"input": null,
+"optofmt": "fun <T> f(block: () -> T): T? {\n    var thrown: Throwable? = null\n    val result = try {\n        block()\n    } catch (t: Throwable) {\n        thrown = t\n        null\n    } finally {\n        cleanup()\n    }\n    return result\n}"
+},
+{
+"id": "block-rhs-extra-5",
+"input": "fun <T> f(block: () -> T): T? {\nvar thrown: Throwable? = null\nval result: T? = try {\nblock()\n} catch (t: Throwable) {\nthrown = t\nnull\n} finally {\ncleanup()\n}\nreturn result\n}",
+"optofmt": "fun <T> f(block: () -> T): T? {\n    var thrown: Throwable? = null\n    val result: T? = try {\n        block()\n    } catch (t: Throwable) {\n        thrown = t\n        null\n    } finally {\n        cleanup()\n    }\n    return result\n}"
+},
+{
+"id": "block-rhs-extra-6",
 "input": null,
 "optofmt": "fun f() {\n    val teamsAffected = when (\n        val event = state.veryLooooooooooooooooooooooooooooongLastEventValue\n    ) {\n        is InfoUpdate -> info.teams.keys.toList()\n        else -> emptyList()\n    }\n}"
 },
@@ -182,7 +197,7 @@
 {
 "id": "multi-supertype-list-one-per-line",
 "input": "internal abstract class ArrayValueExpressionMixin(node: ASTNode) :\n  SqlCompositeElementImpl(node),\n  SqlExpr,\n  PostgreSqlArrayValueExpression {\n  val x = 1\n}",
-"optofmt": "internal abstract class ArrayValueExpressionMixin(node: ASTNode) :\n    SqlCompositeElementImpl(node),\n    SqlExpr,\n    PostgreSqlArrayValueExpression {\n    val x = 1\n}"
+"optofmt": "internal abstract class ArrayValueExpressionMixin(node: ASTNode) : SqlCompositeElementImpl(node),\n    SqlExpr,\n    PostgreSqlArrayValueExpression {\n    val x = 1\n}"
 },
 {
 "id": "supertype-by-delegation-attached",

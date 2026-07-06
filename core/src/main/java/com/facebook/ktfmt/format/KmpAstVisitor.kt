@@ -283,23 +283,39 @@ internal class KmpAstVisitor(
               }
               .sortedBy { it.startOffset }
       if (components.isNotEmpty()) {
-        // optofmt §1: a single trivial expression-bodied accessor (`val x: T get() = …`) stays on
-        // the declaration line when it fits, instead of being force-broken onto its own line. We
-        // emit a soft break so the engine keeps it inline if it fits and wraps it otherwise.
+        // optofmt §1/§3: a single expression-bodied accessor (`val x: T get() = …`) stays attached to
+        // the declaration line, not force-broken onto its own. `get()` is glued with a space and its
+        // own `= <body>` introducer (§3) hangs/wraps the body: a body that fits keeps the whole accessor
+        // inline (`val x: T get() = "hi"`), and a block-valued body (`get() = lock.withLock { … }`)
+        // keeps `get() = … {` on the property line with the block hanging — never breaking after the
+        // type just because the body is multi-line.
         val keepAccessorInline =
             options.optofmt &&
                 components.size == 1 &&
                 components[0].type == KtNodeTypes.PROPERTY_ACCESSOR &&
                 components[0].expressionBody() != null &&
-                components[0].child(KtNodeTypes.BLOCK) == null
-        block(blockIndent) {
-          for (component in components) {
-            if (keepAccessorInline) builder.breakOp(FillMode.UNIFIED, " ", ZERO)
-            else builder.forcedBreak()
-            builder.guessToken(";")
-            block(ZERO) {
-              if (component.type == KtNodeTypes.BACKING_FIELD) visitBackingField(component)
-              else visitPropertyAccessor(component)
+                components[0].child(KtNodeTypes.BLOCK) == null &&
+                // A comment between the type and the accessor forces `get()` onto its own line; it must
+                // then sit one indent in (the block-indent path below), not glue to the property level,
+                // so don't take the inline path. The comment may be a sibling trailing the type
+                // (`val x: T // note`) or the accessor's own leading child (`val x: T\n // note\n get()`).
+                !components[0].hasLineBreakingCommentBefore() &&
+                !components[0].startsWithComment()
+        if (keepAccessorInline) {
+          // Attached at the property's own level (no extra block indent): `get()` sits on the
+          // declaration line and its `= <body>` introducer (§3) hangs the body one level in.
+          builder.space()
+          builder.guessToken(";")
+          block(ZERO) { visitPropertyAccessor(components[0]) }
+        } else {
+          block(blockIndent) {
+            for (component in components) {
+              builder.forcedBreak()
+              builder.guessToken(";")
+              block(ZERO) {
+                if (component.type == KtNodeTypes.BACKING_FIELD) visitBackingField(component)
+                else visitPropertyAccessor(component)
+              }
             }
           }
         }
@@ -789,18 +805,22 @@ internal class KmpAstVisitor(
         block(ZERO) {
           emit(":")
           if (options.optofmt) {
-            // optofmt §1/§3/§4: offer TWO legal arrangements of `: <supertypes>` and let the
+            // optofmt §1/§3/§4: offer THREE legal arrangements of `: <supertypes>` and let the
             // optimizer keep whichever has the lower §1 cost:
             //   attachedWhole — `: A, B(` on the header line, entries joined by ", ", with a trailing
             //                   supertype-call's own argument list free to wrap one-per-line (§3
             //                   attachment + §4 arg wrapping). Chosen whenever the whole list fits on
             //                   the header line (possibly with that call's args wrapping).
-            //   split         — break after `:` and put EACH supertype on its own line at one indent
-            //                   (§4: a comma list is compact or one-per-line, never an overflowing
-            //                   single line). Chosen only when the whole list can't fit on the header
-            //                   line; the introducer break is penalized so `attachedWhole` wins ties.
+            //   attachedFirst — `: A,` on the header line (the introducer stays attached, §3), then
+            //                   each REMAINING supertype on its own line at one indent (§4). Chosen when
+            //                   the whole list can't fit but the first entry attaches without overflow —
+            //                   this is the common multi-supertype case and must beat `split`, which
+            //                   needlessly breaks after `:`.
+            //   split         — break after `:` and put EACH supertype on its own line at one indent.
+            //                   A last resort (a taken introducer break, penalized) chosen only when even
+            //                   the first entry cannot attach to the header line without overflowing.
             // Each entry is captured ONCE (the inter-entry source commas are consumed during that
-            // capture) and reused in both arrangements, so the source-token cursor advances only once.
+            // capture) and reused in all arrangements, so the source-token cursor advances only once.
             val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
             val entries =
                 superTypes.meaningfulChildren().filter {
@@ -820,6 +840,19 @@ internal class KmpAstVisitor(
                     sink.appendSubtree(doc)
                   }
                 }
+            val attachedFirst =
+                sink.capture {
+                  sink.space()
+                  block(expressionBreakIndent) {
+                    entryDocs.forEachIndexed { i, doc ->
+                      if (i != 0) {
+                        sink.literal(",")
+                        sink.forcedBreak(ZERO)
+                      }
+                      sink.appendSubtree(doc)
+                    }
+                  }
+                }
             val split =
                 sink.capture {
                   block(expressionBreakIndent) {
@@ -834,7 +867,7 @@ internal class KmpAstVisitor(
                     }
                   }
                 }
-            sink.emitAlt(listOf(attachedWhole, split))
+            sink.emitAlt(listOf(attachedWhole, attachedFirst, split))
           } else {
             builder.breakOp(FillMode.UNIFIED, " ", expressionBreakIndent)
             visit(superTypes)
@@ -2930,6 +2963,17 @@ private fun KmpNode.hasLineBreakingCommentBefore(): Boolean {
   if (prev.text.toString().startsWith("//")) return true
   val before = prev.prevSibling()
   return before != null && before.type in KtTokens.WHITESPACES && before.text.contains('\n')
+}
+
+/** Whether this node begins with a comment (before its first real token) — e.g. a property accessor
+ * whose own leading comment (`val x: T\n    // note\n    get() = …`) is parsed as the accessor's
+ * first child. Such a comment forces the node onto its own line, so it can't stay inline. */
+private fun KmpNode.startsWithComment(): Boolean {
+  for (c in children()) {
+    if (c.type in KtTokens.WHITESPACES) continue
+    return c.type in KtTokens.COMMENTS
+  }
+  return false
 }
 
 private fun KmpNode.binaryOperator(): String? =

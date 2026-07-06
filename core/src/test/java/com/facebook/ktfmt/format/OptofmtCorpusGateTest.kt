@@ -85,7 +85,7 @@ class OptofmtCorpusGateTest {
 
   private companion object {
     /**
-     * Corpus entries optofmt does NOT yet match. The first three are genuine optofmt gaps (a sub-level
+     * Corpus entries optofmt does NOT yet match. The first two are genuine optofmt gaps (a sub-level
      * "fits" while its containing line overflows, so §1 wrongly avoids wrapping it — the same class the
      * chain re-architecture solved, pending the same treatment for these constructs). The last is a
      * buggy-expected example: RULES §6 does not specify `as`-cast wrap direction, so the corpus's
@@ -94,8 +94,7 @@ class OptofmtCorpusGateTest {
     val KNOWN_DIVERGENCES =
         setOf(
             "infix-attached-extra-1", // §3/§6 long infix RHS mis-wrapped as a call chain — TODO
-            "block-rhs-extra-3", // §3 `= when (long subject) {` breaks after `=` — TODO
-            "accessor-block-body", // §1/§9 `get() = when {…}` breaks `get()` to own line — TODO
+            "block-rhs-extra-6", // §3 `= when (long subject) {` breaks after `=` — TODO
             "supertype-by-delegation-attached", // buggy-expected: `as`-wrap direction not in RULES
         )
   }
