@@ -665,6 +665,30 @@ fun f() {
       )
 
   /**
+   * §5/§12: an expression body whose RHS is a parenthesized expression that leads with an annotation
+   * (`= (@OptIn(…) expr ?: …)`) wraps with collapse-opener / stack-closer: `(` opens a one-level body
+   * indent, the `@OptIn` annotation takes its own line (§12), and `)` returns to the opener's indent.
+   * Regression: the annotation used to glue to `(` and the body drifted to the outer (function) indent.
+   * From Exposed AbstractQuery.kt:153.
+   */
+  @Test
+  fun `annotated-parenthesized-expression-body-wraps-with-body-indent`() =
+      check(
+          input =
+              """class C {
+    fun isForUpdate(): Boolean = (@OptIn(InternalApi::class)
+    forUpdate?.let { it != ForUpdateOption.NoForUpdateOption } ?: false)
+}""",
+          expected =
+              """class C {
+    fun isForUpdate(): Boolean = (
+        @OptIn(InternalApi::class)
+        forUpdate?.let { it != ForUpdateOption.NoForUpdateOption } ?: false
+    )
+}""",
+      )
+
+  /**
    * §13: a lambda's `->` never separates from its parameters: `{ continuation ->` stays on one line even
    * when the opener is too long — optofmt breaks earlier (here after `=`) rather than dropping `->`
    * onto its own line. From kotlinx.coroutines BufferedChannel.kt:129.

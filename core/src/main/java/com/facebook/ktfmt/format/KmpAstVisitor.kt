@@ -49,6 +49,10 @@ internal class KmpAstVisitor(
   private val doubleExpressionBreakIndent: Indent.Const =
       Indent.Const.make(options.continuationIndent, 2)
 
+  /** Set by visitParenthesized while emitting a wrapping `(@Ann … )` body; consumed by the head
+   * annotated expression to force its annotation onto its own line (§12). */
+  private var annotatedHeadOfBreakingParen: Boolean = false
+
   private fun genSym(): BreakTag = BreakTag()
 
   fun visitFile(file: KmpNode) {
@@ -1386,6 +1390,11 @@ internal class KmpAstVisitor(
 
   private fun visitAnnotatedExpression(node: KmpNode) {
     sync(node)
+    // Consume the "head of a breaking parenthesis" signal (see visitParenthesized): this annotated
+    // expression is the head of a `(@Ann … )` body that is wrapping, so its annotation is forced onto
+    // its own line. Read-and-clear at entry so only the first (head) annotated expression honors it.
+    val forcedByParenHead = annotatedHeadOfBreakingParen
+    annotatedHeadOfBreakingParen = false
     block(ZERO) {
       val annotations = node.meaningfulChildren().filter { it.type == KtNodeTypes.ANNOTATION_ENTRY }
       block(ZERO) {
@@ -1398,12 +1407,13 @@ internal class KmpAstVisitor(
       // optofmt §12: an annotation that carries arguments (`@Suppress("…")`) always sits on its own
       // line above what it annotates, even on a plain statement (`@Suppress(…) while (…) {}`) — a
       // UNIFIED break would leave it glued when the line happens to fit. Scoped to statement position
-      // (parent BLOCK), matching the binary-expression branch; a lambda base keeps its `{` glue.
+      // (parent BLOCK, or the head of a wrapping parenthesis); a lambda base keeps its `{` glue.
       val forceAnnotationOwnLine =
           options.optofmt &&
-              node.parent()?.type == KtNodeTypes.BLOCK &&
               base?.type != KtNodeTypes.LAMBDA_EXPRESSION &&
-              annotations.any { it.child(KtNodeTypes.VALUE_ARGUMENT_LIST) != null }
+              (forcedByParenHead ||
+                  (node.parent()?.type == KtNodeTypes.BLOCK &&
+                      annotations.any { it.child(KtNodeTypes.VALUE_ARGUMENT_LIST) != null }))
       when {
         forceAnnotationOwnLine -> builder.forcedBreak()
         (base?.type == KtNodeTypes.BINARY_EXPRESSION ||
@@ -1575,26 +1585,46 @@ internal class KmpAstVisitor(
     sync(node)
     val inner =
         node.meaningfulChildren().firstOrNull { it.type != KtTokens.LPAR && it.type != KtTokens.RPAR }
-    if (System.getenv("PARENDBG") != null)
-        throw RuntimeException("PAREN node=${node.type} inner=${inner?.type} kids=${node.meaningfulChildren().map { it.type }}")
     emit("(")
-    // optofmt §5/§12: when the parenthesized body is an annotated expression (the expression-body
-    // idiom `= (@OptIn(…) expr)`), the `@Ann` must land on its own line at a proper indent. Give the
-    // parens the collapse-opener / stack-closer treatment (break after `(`, body one level in, `)`
-    // back at the opener indent) instead of gluing the annotation to `(` and drifting the body to the
-    // outer indent. Both breaks are UNIFIED, so a body that fits stays inline (§1). Other parenthesized
-    // bodies keep the plain inline emit — their own operators wrap per §6.
-    if (options.optofmt && inner?.type == KtNodeTypes.ANNOTATED_EXPRESSION) {
+    // optofmt §5/§12: when the parenthesized body leads with an annotated expression (the expression-
+    // body idiom `= (@OptIn(…) expr ?: …)`), the `@Ann` must land on its own line at a proper indent.
+    // The annotation may sit at the head of a larger expression (e.g. the left operand of an elvis),
+    // so look through leading binary operators. Give the parens the collapse-opener / stack-closer
+    // treatment (break after `(`, body one level in, `)` back at the opener indent) instead of gluing
+    // the annotation to `(` and drifting the body to the outer indent. Both breaks are UNIFIED, so a
+    // body that fits stays inline (§1). Other parenthesized bodies keep the plain inline emit.
+    if (options.optofmt && headLeadsWithAnnotation(inner)) {
+      // Once §12 puts the head annotation on its own line the construct is multi-line anyway, so the
+      // wrap is FORCED (not merely offered): `(` opens a body indent, the body sits one level in, and
+      // `)` returns to the opener's indent. `annotatedHeadOfBreakingParen` tells the head annotated
+      // expression (reached first, through any leading binary operators) to force its own break too,
+      // so it never glues to its base just because that line happens to fit in 100 columns.
       block(ZERO) {
-        builder.breakOp(FillMode.UNIFIED, "", expressionBreakIndent)
+        builder.breakOp(FillMode.FORCED, "", expressionBreakIndent)
+        annotatedHeadOfBreakingParen = true
         block(expressionBreakIndent) { visit(inner) }
-        builder.breakOp(FillMode.UNIFIED, "", ZERO)
+        annotatedHeadOfBreakingParen = false
+        builder.breakOp(FillMode.FORCED, "", ZERO)
       }
     } else {
       visit(inner)
     }
     emit(")")
   }
+
+  /**
+   * Whether [node] is an annotated expression, or a binary expression (`?:`, `&&`, `as`, …) whose
+   * leftmost operand ultimately is one. The annotation then sits at the very head of the expression
+   * and must break onto its own line (§12), so a wrapping parenthesis has to open a body indent.
+   */
+  private fun headLeadsWithAnnotation(node: KmpNode?): Boolean =
+      when (node?.type) {
+        KtNodeTypes.ANNOTATED_EXPRESSION -> true
+        KtNodeTypes.BINARY_EXPRESSION,
+        KtNodeTypes.BINARY_WITH_TYPE ->
+            headLeadsWithAnnotation(node.meaningfulChildren().firstOrNull())
+        else -> false
+      }
 
   private fun visitAnnotationEntry(node: KmpNode) {
     sync(node)
