@@ -110,6 +110,16 @@
 "optofmt": "fun f(): PetType {\n    return findPetTypes.find { it.name == text }\n        ?: throw ParseException(\"type not found: \" + text, 0)\n}"
 },
 {
+"id": "elvis-fits",
+"input": "fun f() { val entry = registry.lookup(requestedName) ?: registry.defaultFor(requestedName) }",
+"optofmt": "fun f() {\n    val entry = registry.lookup(requestedName) ?: registry.defaultFor(requestedName)\n}"
+},
+{
+"id": "elvis-fits-extra-1",
+"input": "fun f() { val entry = registry.lookupByQualifiedName(requestedName, currentScope) ?: registry.defaultEntryForScope(currentScope) }",
+"optofmt": "fun f() {\n    val entry = registry.lookupByQualifiedName(requestedName, currentScope)\n        ?: registry.defaultEntryForScope(currentScope)\n}"
+},
+{
 "id": "annotation-placement",
 "input": "@JvmName(\"other\") fun testSomething() {}",
 "optofmt": "@JvmName(\"other\")\nfun testSomething() {}"
