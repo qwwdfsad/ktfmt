@@ -558,6 +558,32 @@ object Algorithms {
       )
 
   /**
+   * §3: when an expression body's `=` must break (the signature is too long to attach the RHS), and
+   * the RHS is a sole-trailing-lambda call chain (`Receiver.call(args) { … }`), the call sits at one
+   * indent and its lambda body hangs ONE FURTHER level (body one indent past the call, `}` aligned
+   * with the call). Regression: the body under-indented by a level (body at the call's own indent,
+   * `}` a level shallower than the call). From kotlinx.coroutines ChannelSinkBenchmark.kt:46.
+   */
+  @Test
+  fun `broken-eq-scoping-call-with-value-args-indents-body`() =
+      check(
+          input =
+              """open class C {
+    private fun Channel.Factory.range(start: Int, count: Int, context: CoroutineContext) =
+        GlobalScope.produce(context) {
+            for (i in start until (start + count)) send(i)
+        }
+}""",
+          expected =
+              """open class C {
+    private fun Channel.Factory.range(start: Int, count: Int, context: CoroutineContext) =
+        GlobalScope.produce(context) {
+            for (i in start until (start + count)) send(i)
+        }
+}""",
+      )
+
+  /**
    * §4: a call with MULTIPLE lambda arguments (`Encryptor({ … }, { … }, { … })`) that doesn't fit on
    * one line splits one-item-per-line — never fills (several lambdas per line). From Exposed
    * Algorithms.kt:40-45. Regression: the §4 last-item-expansion path kept the leading args inline, but

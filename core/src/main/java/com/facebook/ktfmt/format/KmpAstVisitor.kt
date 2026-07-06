@@ -644,6 +644,19 @@ internal class KmpAstVisitor(
           node?.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION
 
   /**
+   * A call chain ending in a SOLE trailing lambda (`recv.run { … }`, `GlobalScope.produce(x) { … }`)
+   * — the shape [emitQualifiedExpression] hangs via [emitChainWithHangableTrailingLambda]. That hang
+   * anchors its body indent to the ENCLOSING level, so as an introducer RHS it must go through the
+   * `block(expressionBreakIndent)` path (like a scoping call), not the plain chain break — otherwise a
+   * broken `=` leaves the lambda body (and its `}`) one level too shallow.
+   */
+  private fun isSoleTrailingLambdaChain(node: KmpNode?): Boolean {
+    if (!options.optofmt || !isCallChain(node)) return false
+    val parts = breakIntoParts(node!!)
+    return parts.last().isLambdaPart() && parts.count { it.isLambdaPart() } == 1
+  }
+
+  /**
    * optofmt §1/§3: emit an introducer's right-hand side ([rhsExpr], built by [buildRhs]) as two
    * competing candidate layouts and let the optimizer keep the lower-§1-cost one. Used for every
    * `= rhs` / `name = rhs` introducer (property init, assignment, expression body, named argument):
@@ -692,13 +705,15 @@ internal class KmpAstVisitor(
     val attached = sink.capture { sink.space(); sink.appendSubtree(rhs) }
     val broken =
         sink.capture {
-          if (isCallChain(rhsExpr)) {
+          if (isCallChain(rhsExpr) && !isSoleTrailingLambdaChain(rhsExpr)) {
             // §3/§7: break after `=` for a chain is penalized only below line-count, so §3 attaches
             // the receiver-through-first-call when that fits without costing extra lines, but a chain
             // whose receiver-first-call would overflow (or tear its args) still breaks after `=`.
             sink.forcedChainIntroducerBreak(expressionBreakIndent)
             sink.appendSubtree(rhs)
           } else {
+            // Non-chain RHS, or a sole-trailing-lambda chain (`GlobalScope.produce(x) { … }`): wrap in
+            // a block so the hang's body indent anchors at the break column, not the introducer's.
             block(expressionBreakIndent) {
               sink.forcedIntroducerBreak(ZERO)
               sink.appendSubtree(rhs)
