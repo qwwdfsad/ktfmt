@@ -71,7 +71,7 @@ class OptofmtSnippetsTest {
         queueSettings.featuredRunWaitTime,
         queueSettings.inProgressRunWaitTime,
         queueSettings.maxQueueSize,
-        queueSettings.maxUntestedRun
+        queueSettings.maxUntestedRun,
     ))
 }""",
       )
@@ -80,7 +80,7 @@ class OptofmtSnippetsTest {
   fun `indent-economy-extra-1-idempotent`() =
       idempotent("""fun f() {
     registerHandler(buildHandler(
-        aLongUnbreakableArgumentIdentifierDeliberatelySizedToOverflowTheColumnLimitNoMatterWhatXY
+        aLongUnbreakableArgumentIdentifierDeliberatelySizedToOverflowTheColumnLimitNoMatterWhatXY,
     ))
 }""")
 
@@ -90,7 +90,7 @@ class OptofmtSnippetsTest {
           input = """val pair = orgInfo.id to OverrideOrganizations.Override(fullName = substituteRaw(fullName), displayName = substituteRaw(displayName))""",
           expected = """val pair = orgInfo.id to OverrideOrganizations.Override(
     fullName = substituteRaw(fullName),
-    displayName = substituteRaw(displayName)
+    displayName = substituteRaw(displayName),
 )""",
       )
 
@@ -103,7 +103,7 @@ class OptofmtSnippetsTest {
     name = "clics-archive",
     help = "Dump CLICS contest archive (zip)",
     defaultFileName = "contest-archive.zip",
-    outputHelp = "Path to new zip file"
+    outputHelp = "Path to new zip file",
 ) {}""",
       )
 
@@ -230,7 +230,7 @@ public fun Flow<ContestUpdate>.addComputedData(configure: ComputedDataConfig.() 
 }""",
           expected =
               """public fun Flow<ContestUpdate>.addComputedData(
-    configure: ComputedDataConfig.() -> Unit = {}
+    configure: ComputedDataConfig.() -> Unit = {},
 ): Flow<ContestUpdate> {
     val config = ComputedDataConfig().apply(configure)
     return this.applyIf(config.autoCreateMissingGroups) { autoCreateMissingGroupsAndOrgs() }
@@ -475,7 +475,7 @@ object Algorithms {
                 password.toString(),
                 salt,
                 KeyGenerators.secureRandom(BLOCK_LEN),
-                AesBytesEncryptor.CipherAlgorithm.GCM
+                AesBytesEncryptor.CipherAlgorithm.GCM,
             )
             .run {
                 makeEncryptor()
@@ -519,7 +519,7 @@ object Algorithms {
     return Encryptor(
         { base64Encoder.encodeToString(encrypt(it.toByteArray())) },
         { String(decrypt(base64Decoder.decode(it))) },
-        { inputLen -> base64EncodedLength(inputLen) }
+        { inputLen -> base64EncodedLength(inputLen) },
     )
 }""",
       )
@@ -581,7 +581,7 @@ fun f() {
             .using(project(":core"))
             .because(
                 "Because Kotlin compiler embeddable leaks coroutines into the runtime classpath, " +
-                "triggering all sort of incompatible class changes errors"
+                "triggering all sort of incompatible class changes errors",
             )
     }
 }""",
@@ -599,7 +599,7 @@ fun f() {
               """fun f() {
     check(
         "Because Kotlin compiler embeddable leaks coroutines into the runtime classpath here now, " +
-        "triggering all sort of incompatible class changes errors"
+        "triggering all sort of incompatible class changes errors",
     )
 }""",
       )
@@ -640,7 +640,7 @@ fun f() {
           expected =
               """public class Scope<T> @PublishedApi internal constructor(
     @PublishedApi internal val flow: SharedFlow<T>,
-    private val waiting: MutableStateFlow<Int>
+    private val waiting: MutableStateFlow<Int>,
 ) {}""",
       )
 
@@ -763,7 +763,7 @@ fun f() {
 }""",
           expected = """public class SharedFlowSubscriptionScope<T> @PublishedApi internal constructor(
     @PublishedApi internal val flow: SharedFlow<T>,
-    private val subscriptionWaitingFlow: MutableStateFlow<Int>
+    private val subscriptionWaitingFlow: MutableStateFlow<Int>,
 ) {}""",
       )
 
@@ -802,11 +802,35 @@ typealias MessageId = StrongId<MessageTag>""",
           expected = """fun registerEventListener(
     eventType: EventType,
     listenerPriority: ListenerPriority,
-    listenerCallback: EventListener
+    listenerCallback: EventListener,
 ) {
     installListener()
 }""",
       )
+
+  /**
+   * §14: a comma list that stays on one line has NO trailing comma; the same list, when it must wrap
+   * one-per-line, ends with a trailing comma after the final argument. The comma is a property of the
+   * layout (added when wrapped, dropped when flat), so both forms are idempotent.
+   */
+  @Test
+  fun `trailing-comma-only-when-list-wraps`() {
+    check(input = """fun f() { call(alpha, beta, gamma) }""", expected = """fun f() {
+    call(alpha, beta, gamma)
+}""")
+    check(
+        input =
+            """fun f() { callWithLongArgs(firstArgumentIsQuiteLong, secondArgumentIsQuiteLong, thirdArgumentIsQuiteLong, fourthArgument) }""",
+        expected =
+            """fun f() {
+    callWithLongArgs(
+        firstArgumentIsQuiteLong,
+        secondArgumentIsQuiteLong,
+        thirdArgumentIsQuiteLong,
+        fourthArgument,
+    )
+}""")
+  }
 
   @Test
   fun `elvis-wrap`() =

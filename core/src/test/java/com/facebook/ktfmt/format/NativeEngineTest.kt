@@ -103,7 +103,7 @@ class NativeEngineTest {
             |fun registerEventListener(
             |    eventType: EventType,
             |    listenerPriority: ListenerPriority,
-            |    listenerCallback: EventListener
+            |    listenerCallback: EventListener,
             |) {
             |    installListener()
             |}

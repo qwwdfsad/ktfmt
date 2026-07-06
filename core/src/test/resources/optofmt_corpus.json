@@ -7,32 +7,32 @@
 {
 "id": "indent-economy",
 "input": "fun f() { add(OverrideQueue(queueSettings.waitTime, queueSettings.firstToSolveWaitTime, queueSettings.featuredRunWaitTime, queueSettings.inProgressRunWaitTime, queueSettings.maxQueueSize, queueSettings.maxUntestedRun)) }",
-"optofmt": "fun f() {\n    add(OverrideQueue(\n        queueSettings.waitTime,\n        queueSettings.firstToSolveWaitTime,\n        queueSettings.featuredRunWaitTime,\n        queueSettings.inProgressRunWaitTime,\n        queueSettings.maxQueueSize,\n        queueSettings.maxUntestedRun\n    ))\n}"
+"optofmt": "fun f() {\n    add(OverrideQueue(\n        queueSettings.waitTime,\n        queueSettings.firstToSolveWaitTime,\n        queueSettings.featuredRunWaitTime,\n        queueSettings.inProgressRunWaitTime,\n        queueSettings.maxQueueSize,\n        queueSettings.maxUntestedRun,\n    ))\n}\n"
 },
 {
 "id": "indent-economy-extra-1",
 "input": null,
-"optofmt": "fun f() {\n    registerHandler(buildHandler(\n        aLongUnbreakableArgumentIdentifierDeliberatelySizedToOverflowTheColumnLimitNoMatterWhatXY\n    ))\n}"
+"optofmt": "fun f() {\n    registerHandler(buildHandler(\n        aLongUnbreakableArgumentIdentifierDeliberatelySizedToOverflowTheColumnLimitNoMatterWhatXY,\n    ))\n}\n"
 },
 {
 "id": "indent-economy-extra-2",
 "input": null,
-"optofmt": "fun f() {\n    add(\n        arg1,\n        arg2,\n        OverrideQueue(\n            queueSettings.waitTime,\n            queueSettings.firstToSolveWaitTime,\n            queueSettings.maxQueueSize,\n            queueSettings.maxUntestedRun\n        ),\n        arg3,\n        arg4\n    )\n}"
+"optofmt": "fun f() {\n    add(\n        arg1,\n        arg2,\n        OverrideQueue(\n            queueSettings.waitTime,\n            queueSettings.firstToSolveWaitTime,\n            queueSettings.maxQueueSize,\n            queueSettings.maxUntestedRun,\n        ),\n        arg3,\n        arg4,\n    )\n}\n"
 },
 {
 "id": "indent-economy-extra-3",
 "input": null,
-"optofmt": "fun f() {\n    add(queue = OverrideQueue(\n        queueSettings.waitTime,\n        queueSettings.firstToSolveWaitTime,\n        queueSettings.featuredRunWaitTime,\n        queueSettings.inProgressRunWaitTime,\n        queueSettings.maxQueueSize,\n        queueSettings.maxUntestedRun\n    ))\n}"
+"optofmt": "fun f() {\n    add(queue = OverrideQueue(\n        queueSettings.waitTime,\n        queueSettings.firstToSolveWaitTime,\n        queueSettings.featuredRunWaitTime,\n        queueSettings.inProgressRunWaitTime,\n        queueSettings.maxQueueSize,\n        queueSettings.maxUntestedRun,\n    ))\n}\n"
 },
 {
 "id": "indent-economy-extra-4",
 "input": null,
-"optofmt": "fun f() {\n    add(\n        queue = OverrideQueue(\n            queueSettings.waitTime,\n            queueSettings.firstToSolveWaitTime,\n            queueSettings.featuredRunWaitTime,\n            queueSettings.inProgressRunWaitTime,\n            queueSettings.maxQueueSize,\n            queueSettings.maxUntestedRun\n        ),\n        foo = OverrideQueue(\n            queueSettings.waitTime,\n            queueSettings.firstToSolveWaitTime,\n            queueSettings.featuredRunWaitTime,\n            queueSettings.inProgressRunWaitTime,\n            queueSettings.maxQueueSize,\n            queueSettings.maxUntestedRun\n        )\n    )\n}"
+"optofmt": "fun f() {\n    add(\n        queue = OverrideQueue(\n            queueSettings.waitTime,\n            queueSettings.firstToSolveWaitTime,\n            queueSettings.featuredRunWaitTime,\n            queueSettings.inProgressRunWaitTime,\n            queueSettings.maxQueueSize,\n            queueSettings.maxUntestedRun,\n        ),\n        foo = OverrideQueue(\n            queueSettings.waitTime,\n            queueSettings.firstToSolveWaitTime,\n            queueSettings.featuredRunWaitTime,\n            queueSettings.inProgressRunWaitTime,\n            queueSettings.maxQueueSize,\n            queueSettings.maxUntestedRun,\n        ),\n    )\n}\n"
 },
 {
 "id": "infix-attached",
 "input": "val pair = orgInfo.id to OverrideOrganizations.Override(fullName = substituteRaw(fullName), displayName = substituteRaw(displayName))",
-"optofmt": "val pair = orgInfo.id to OverrideOrganizations.Override(\n    fullName = substituteRaw(fullName),\n    displayName = substituteRaw(displayName)\n)"
+"optofmt": "val pair = orgInfo.id to OverrideOrganizations.Override(\n    fullName = substituteRaw(fullName),\n    displayName = substituteRaw(displayName),\n)\n"
 },
 {
 "id": "infix-attached-extra-1",
@@ -42,12 +42,12 @@
 {
 "id": "supertype-attached",
 "input": "object ClicsArchiveCommand : DumpFileCommand(name = \"clics-archive\", help = \"Dump CLICS contest archive (zip)\", defaultFileName = \"contest-archive.zip\", outputHelp = \"Path to new zip file\") {\n}",
-"optofmt": "object ClicsArchiveCommand : DumpFileCommand(\n    name = \"clics-archive\",\n    help = \"Dump CLICS contest archive (zip)\",\n    defaultFileName = \"contest-archive.zip\",\n    outputHelp = \"Path to new zip file\"\n) {}"
+"optofmt": "object ClicsArchiveCommand : DumpFileCommand(\n    name = \"clics-archive\",\n    help = \"Dump CLICS contest archive (zip)\",\n    defaultFileName = \"contest-archive.zip\",\n    outputHelp = \"Path to new zip file\",\n) {}\n"
 },
 {
 "id": "supertype-attached-extra-1",
 "input": null,
-"optofmt": "object ClicsArchiveCommand : DumpFileCommand(\n    name = \"clics-archive\",\n    help = \"Dump CLICS contest archive (zip)\",\n    defaultFileName = \"contest-archive.zip\",\n    outputHelp = \"Path to new zip file\"\n), Runnable, Closeable, KoinComponent {}"
+"optofmt": "object ClicsArchiveCommand : DumpFileCommand(\n    name = \"clics-archive\",\n    help = \"Dump CLICS contest archive (zip)\",\n    defaultFileName = \"contest-archive.zip\",\n    outputHelp = \"Path to new zip file\",\n), Runnable, Closeable, KoinComponent {}\n"
 },
 {
 "id": "long-call-chain",
@@ -87,7 +87,7 @@
 {
 "id": "compact-header",
 "input": "public class SharedFlowSubscriptionScope<T> @PublishedApi internal constructor(@PublishedApi internal val flow: SharedFlow<T>, private val subscriptionWaitingFlow: MutableStateFlow<Int>) {\n}",
-"optofmt": "public class SharedFlowSubscriptionScope<T> @PublishedApi internal constructor(\n    @PublishedApi internal val flow: SharedFlow<T>,\n    private val subscriptionWaitingFlow: MutableStateFlow<Int>\n) {}"
+"optofmt": "public class SharedFlowSubscriptionScope<T> @PublishedApi internal constructor(\n    @PublishedApi internal val flow: SharedFlow<T>,\n    private val subscriptionWaitingFlow: MutableStateFlow<Int>,\n) {}\n"
 },
 {
 "id": "comment-preservation",
@@ -102,7 +102,7 @@
 {
 "id": "long-parameter-list",
 "input": "fun registerEventListener(eventType: EventType, listenerPriority: ListenerPriority, listenerCallback: EventListener) { installListener() }",
-"optofmt": "fun registerEventListener(\n    eventType: EventType,\n    listenerPriority: ListenerPriority,\n    listenerCallback: EventListener\n) {\n    installListener()\n}"
+"optofmt": "fun registerEventListener(\n    eventType: EventType,\n    listenerPriority: ListenerPriority,\n    listenerCallback: EventListener,\n) {\n    installListener()\n}\n"
 },
 {
 "id": "elvis-wrap",
@@ -152,7 +152,7 @@
 {
 "id": "assign-introducer-attached-extra-2",
 "input": null,
-"optofmt": "package org.jetbrains.exposed.sql.vendors\n\nval ANSI_SQL_2003_KEYWORDS: Set<String> = setOf(\n    \"A\",\n    \"ABS\",\n    \"ABSOLUTE\",\n    \"ACTION\",\n    \"ADA\",\n    \"ADD\",\n    \"ADMIN\",\n    \"AFTER\",\n    \"ALL\",\n    \"ALLOCATE\",\n    \"ALTER\",\n    \"ALWAYS\",\n    \"AND\",\n    \"ANY\",\n    \"ARE\",\n    \"ARRAY\",\n    \"AS\",\n    \"ASC\"\n)"
+"optofmt": "package org.jetbrains.exposed.sql.vendors\n\nval ANSI_SQL_2003_KEYWORDS: Set<String> = setOf(\n    \"A\",\n    \"ABS\",\n    \"ABSOLUTE\",\n    \"ACTION\",\n    \"ADA\",\n    \"ADD\",\n    \"ADMIN\",\n    \"AFTER\",\n    \"ALL\",\n    \"ALLOCATE\",\n    \"ALTER\",\n    \"ALWAYS\",\n    \"AND\",\n    \"ANY\",\n    \"ARE\",\n    \"ARRAY\",\n    \"AS\",\n    \"ASC\",\n)"
 },
 {
 "id": "argumentless-annotation-own-line",

@@ -427,6 +427,7 @@ internal class KmpAstVisitor(
                 postfix = ")",
                 wrapInBlock = false,
                 breakBeforePostfix = true,
+                trailingCommaWhenBroken = true,
             )
           }
           emitTypeOrDelegationCall {
@@ -703,6 +704,7 @@ internal class KmpAstVisitor(
         postfix = ")",
         wrapInBlock = false,
         breakBeforePostfix = true,
+        trailingCommaWhenBroken = true,
     )
   }
 
@@ -1463,7 +1465,8 @@ internal class KmpAstVisitor(
           hasTrailingComma = node.hasTrailingCommaAfter(items.lastOrNull()),
           prefix = "[",
           postfix = "]",
-          wrapInBlock = true)
+          wrapInBlock = true,
+          trailingCommaWhenBroken = true)
     }
   }
 
@@ -2120,6 +2123,7 @@ internal class KmpAstVisitor(
         prefix = "(",
         postfix = ")",
         breakAfterPrefix = breakAfterPrefix,
+        trailingCommaWhenBroken = true,
     )
   }
 
@@ -2655,6 +2659,10 @@ internal class KmpAstVisitor(
       // constructs that RULES §4 does not treat as wrappable (a generic type-argument list): the
       // optimizer must not tear them across lines; an overflowing declaration wraps elsewhere.
       breakable: Boolean = true,
+      // optofmt §14: when the list splits one-per-line, add a trailing comma after the final item.
+      // Set only where Kotlin permits a trailing comma (call arguments, value parameters, collection
+      // literals) — NOT a supertype list, function-type parameters, or a `where` clause.
+      trailingCommaWhenBroken: Boolean = false,
   ): BreakTag? {
     // optofmt §4: never emit a trailing comma, and don't let a source one force the split — ignore
     // it entirely so the list is laid out compact-or-fully-split on its own merits. Only on the
@@ -2691,7 +2699,14 @@ internal class KmpAstVisitor(
     }
 
     if (breakAfterLastElement) {
-      builder.breakOp(breakType, "", expressionBreakNegativeIndent)
+      // §14: on the optofmt path, the closing break (taken exactly when the list wraps) carries a
+      // trailing comma, so a multi-line list ends with `item,` and a single-line one does not.
+      if (options.optofmt && trailingCommaWhenBroken && list.isNotEmpty()) {
+        (builder as com.facebook.ktfmt.format.layout.NativeSink)
+            .brokenPrefixBreak(breakType, expressionBreakNegativeIndent, ",")
+      } else {
+        builder.breakOp(breakType, "", expressionBreakNegativeIndent)
+      }
     }
 
     if (postfix != null) {

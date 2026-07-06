@@ -58,6 +58,11 @@ internal class NBreak(
     // required break. It is safe to flatten (`a().b()` reads fine on one line), so [NFlat] may suppress
     // it — unlike a nested lambda-body statement break or an EOL comment, which must keep their lines.
     val chainStructural: Boolean = false,
+    // RULES §14: text emitted at the END of the line this break closes, but ONLY when the break is
+    // taken (the list wrapped) — a trailing comma. When the break is not taken (list stays flat) the
+    // prefix vanishes, so a single-line list carries no comma. Flat width ignores it, so it never
+    // pushes a list that fits into wrapping.
+    val brokenPrefixText: String = "",
 ) : NDoc()
 
 /** Literal text — a source token or a single space. */
@@ -330,6 +335,15 @@ class NativeSink(
       plusIndent: Indent,
       optTag: Optional<BreakTag>,
   ) = add(NBreak(fillMode, flat, plusIndent, optTag.orElse(null)))
+
+  /**
+   * A break that, when TAKEN (the list wrapped), emits [brokenPrefix] — a trailing "," — at the end
+   * of the line it closes; when not taken (list stays flat) the prefix vanishes. Used for the closing
+   * break of a multi-line comma list (RULES §14). Flat width ignores the prefix, so it never turns a
+   * list that fits into a wrapped one.
+   */
+  internal fun brokenPrefixBreak(fillMode: FillMode, plusIndent: Indent, brokenPrefix: String) =
+      add(NBreak(fillMode, "", plusIndent, null, brokenPrefixText = brokenPrefix))
 
   override fun forcedBreak(plusIndent: Indent) {
     resolvePending()
@@ -808,7 +822,10 @@ class NativeRenderer(
    * indent. */
   private fun breakTaken(a: Layout, brk: NBreak, base: Int): Layout {
     val newIndent = maxOf(base + brk.plusIndent.eval(), 0)
-    val over = (a.lastCol - maxWidth).coerceAtLeast(0)
+    // §14: a taken break may emit a trailing "," at the end of the line it closes, so that line is
+    // one column wider than the open column reached so far.
+    val closedCol = a.lastCol + brk.brokenPrefixText.length
+    val over = (closedCol - maxWidth).coerceAtLeast(0)
     return Layout(
         worst = maxOf(a.worst, over),
         overLines = a.overLines + (if (over > 0) 1 else 0),
@@ -821,6 +838,7 @@ class NativeRenderer(
         emit = {
           a.emit()
           if (brk.tag != null) taken[brk.tag] = true
+          if (brk.brokenPrefixText.isNotEmpty()) emitText(brk.brokenPrefixText)
           breakTo(newIndent)
         },
     )
