@@ -70,6 +70,16 @@ internal constructor(
      * column (it counts already-taken forced breaks), so it is safe for the Pareto search.
      */
     val introducerBreaks: Int,
+    /**
+     * How many break-after-`=` introducer breaks are taken specifically for a CALL-CHAIN right-hand
+     * side (RULES §3/§7). Unlike [introducerBreaks] this is ranked BELOW [lines] in
+     * [Objectives.DEFAULT], so it only breaks a tie: when attaching a chain's receiver-through-first-
+     * call to the introducer and breaking after it cost the same number of lines, §3 prefers the
+     * attached one — but when attaching would need MORE lines (it would have to tear the first call's
+     * arguments to fit), the lower line count wins first, so the chain breaks after `=` instead of
+     * tearing (the commonConfiguration case). Monotone and column-independent, so Pareto-safe.
+     */
+    val chainIntroducerBreaks: Int,
 )
 
 /**
@@ -112,7 +122,13 @@ object Objectives {
    */
   val DEFAULT =
       LayoutObjective {
-        lex(it.worstOverflow, it.overflowLines, it.introducerBreaks, it.lines, it.deepestIndent)
+        lex(
+            it.worstOverflow,
+            it.overflowLines,
+            it.introducerBreaks,
+            it.lines,
+            it.chainIntroducerBreaks,
+            it.deepestIndent)
       }
 
   /** RULES §1 without the §1.4 flatness tiebreak (worst overflow, overflowing lines, then lines). */

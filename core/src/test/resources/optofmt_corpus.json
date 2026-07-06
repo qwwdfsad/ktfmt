@@ -1,0 +1,202 @@
+[
+{
+"id": "boolean-condition",
+"input": "fun f() { if (unwrapped !== rootCause && unwrapped !== unwrappedCause && unwrapped !is CancellationException && seenExceptions.add(unwrapped)) { rootCause.addSuppressed(unwrapped) } }",
+"optofmt": "fun f() {\n    if (\n        unwrapped !== rootCause &&\n        unwrapped !== unwrappedCause &&\n        unwrapped !is CancellationException &&\n        seenExceptions.add(unwrapped)\n    ) {\n        rootCause.addSuppressed(unwrapped)\n    }\n}"
+},
+{
+"id": "indent-economy",
+"input": "fun f() { add(OverrideQueue(queueSettings.waitTime, queueSettings.firstToSolveWaitTime, queueSettings.featuredRunWaitTime, queueSettings.inProgressRunWaitTime, queueSettings.maxQueueSize, queueSettings.maxUntestedRun)) }",
+"optofmt": "fun f() {\n    add(OverrideQueue(\n        queueSettings.waitTime,\n        queueSettings.firstToSolveWaitTime,\n        queueSettings.featuredRunWaitTime,\n        queueSettings.inProgressRunWaitTime,\n        queueSettings.maxQueueSize,\n        queueSettings.maxUntestedRun\n    ))\n}"
+},
+{
+"id": "indent-economy-extra-1",
+"input": null,
+"optofmt": "fun f() {\n    registerHandler(buildHandler(\n        aLongUnbreakableArgumentIdentifierDeliberatelySizedToOverflowTheColumnLimitNoMatterWhatXY\n    ))\n}"
+},
+{
+"id": "indent-economy-extra-2",
+"input": null,
+"optofmt": "fun f() {\n    add(\n        arg1,\n        arg2,\n        OverrideQueue(\n            queueSettings.waitTime,\n            queueSettings.firstToSolveWaitTime,\n            queueSettings.maxQueueSize,\n            queueSettings.maxUntestedRun\n        ),\n        arg3,\n        arg4\n    )\n}"
+},
+{
+"id": "indent-economy-extra-3",
+"input": null,
+"optofmt": "fun f() {\n    add(queue = OverrideQueue(\n        queueSettings.waitTime,\n        queueSettings.firstToSolveWaitTime,\n        queueSettings.featuredRunWaitTime,\n        queueSettings.inProgressRunWaitTime,\n        queueSettings.maxQueueSize,\n        queueSettings.maxUntestedRun\n    ))\n}"
+},
+{
+"id": "indent-economy-extra-4",
+"input": null,
+"optofmt": "fun f() {\n    add(\n        queue = OverrideQueue(\n            queueSettings.waitTime,\n            queueSettings.firstToSolveWaitTime,\n            queueSettings.featuredRunWaitTime,\n            queueSettings.inProgressRunWaitTime,\n            queueSettings.maxQueueSize,\n            queueSettings.maxUntestedRun\n        ),\n        foo = OverrideQueue(\n            queueSettings.waitTime,\n            queueSettings.firstToSolveWaitTime,\n            queueSettings.featuredRunWaitTime,\n            queueSettings.inProgressRunWaitTime,\n            queueSettings.maxQueueSize,\n            queueSettings.maxUntestedRun\n        )\n    )\n}"
+},
+{
+"id": "infix-attached",
+"input": "val pair = orgInfo.id to OverrideOrganizations.Override(fullName = substituteRaw(fullName), displayName = substituteRaw(displayName))",
+"optofmt": "val pair = orgInfo.id to OverrideOrganizations.Override(\n    fullName = substituteRaw(fullName),\n    displayName = substituteRaw(displayName)\n)"
+},
+{
+"id": "infix-attached-extra-1",
+"input": null,
+"optofmt": "val pair: Pair<OrganizationId, OverrideOrganizations.Override> = orgInfo.id to\n    OverrideOrganizations.Override(\n        fullName = substituteRaw(fullName),\n        displayName = substituteRaw(displayName)\n    )"
+},
+{
+"id": "supertype-attached",
+"input": "object ClicsArchiveCommand : DumpFileCommand(name = \"clics-archive\", help = \"Dump CLICS contest archive (zip)\", defaultFileName = \"contest-archive.zip\", outputHelp = \"Path to new zip file\") {\n}",
+"optofmt": "object ClicsArchiveCommand : DumpFileCommand(\n    name = \"clics-archive\",\n    help = \"Dump CLICS contest archive (zip)\",\n    defaultFileName = \"contest-archive.zip\",\n    outputHelp = \"Path to new zip file\"\n) {}"
+},
+{
+"id": "supertype-attached-extra-1",
+"input": null,
+"optofmt": "object ClicsArchiveCommand : DumpFileCommand(\n    name = \"clics-archive\",\n    help = \"Dump CLICS contest archive (zip)\",\n    defaultFileName = \"contest-archive.zip\",\n    outputHelp = \"Path to new zip file\"\n), Runnable, Closeable, KoinComponent {}"
+},
+{
+"id": "long-call-chain",
+"input": "fun f() { val testDataDir: Path = Path.of(\"\").absolute().parent.parent.resolve(\"tests\").resolve(\"testData\").resolve(\"loaders\").relativeTo(Path.of(\"\").absolute()) }",
+"optofmt": "fun f() {\n    val testDataDir: Path = Path.of(\"\")\n        .absolute()\n        .parent\n        .parent\n        .resolve(\"tests\")\n        .resolve(\"testData\")\n        .resolve(\"loaders\")\n        .relativeTo(Path.of(\"\").absolute())\n}"
+},
+{
+"id": "block-rhs",
+"input": "fun f() {\nval teamsAffected = when (val event = state.lastEvent) {\nis CommentaryMessagesUpdate -> emptyList()\nis InfoUpdate -> info.teams.keys.toList()\nis RunUpdate -> {\nlastSubmissionTime = maxOf(lastSubmissionTime, event.newInfo.time)\nrunsByTeamId.applyEvent(state)\n}\n}\n}",
+"optofmt": "fun f() {\n    val teamsAffected = when (val event = state.lastEvent) {\n        is CommentaryMessagesUpdate -> emptyList()\n        is InfoUpdate -> info.teams.keys.toList()\n        is RunUpdate -> {\n            lastSubmissionTime = maxOf(lastSubmissionTime, event.newInfo.time)\n            runsByTeamId.applyEvent(state)\n        }\n    }\n}"
+},
+{
+"id": "block-rhs-extra-1",
+"input": null,
+"optofmt": "fun f() {\n    val builder = if (!builders.isEmpty()) {\n        builders.peek()\n    } else {\n        null\n    }\n}"
+},
+{
+"id": "block-rhs-extra-2",
+"input": null,
+"optofmt": "fun <T> f(block: () -> T): T? {\n    var thrown: Throwable? = null\n    val result = try {\n        block()\n    } catch (t: Throwable) {\n        thrown = t\n        null\n    } finally {\n        cleanup()\n    }\n    return result\n}"
+},
+{
+"id": "block-rhs-extra-3",
+"input": null,
+"optofmt": "fun f() {\n    val teamsAffected = when (\n        val event = state.veryLooooooooooooooooooooooooooooongLastEventValue\n    ) {\n        is InfoUpdate -> info.teams.keys.toList()\n        else -> emptyList()\n    }\n}"
+},
+{
+"id": "accessor-block-body",
+"input": "val outText: MutableList<String> get() = when (inputTextPart) {\nInputTextPart.PRE_TOC -> preTocText\nInputTextPart.POST_TOC -> postTocText\nelse -> throw IllegalStateException(\"Wrong state: $inputTextPart\")\n}",
+"optofmt": "val outText: MutableList<String> get() = when (inputTextPart) {\n    InputTextPart.PRE_TOC -> preTocText\n    InputTextPart.POST_TOC -> postTocText\n    else -> throw IllegalStateException(\"Wrong state: $inputTextPart\")\n}"
+},
+{
+"id": "trailing-lambda",
+"input": "fun run() { executeWithRetryPolicy(maximumRetryCount, backoffStrategy, { requestContext: RequestContext -> requestContext.proceed() }) }",
+"optofmt": "fun run() {\n    executeWithRetryPolicy(maximumRetryCount, backoffStrategy, { requestContext: RequestContext ->\n        requestContext.proceed()\n    })\n}"
+},
+{
+"id": "compact-header",
+"input": "public class SharedFlowSubscriptionScope<T> @PublishedApi internal constructor(@PublishedApi internal val flow: SharedFlow<T>, private val subscriptionWaitingFlow: MutableStateFlow<Int>) {\n}",
+"optofmt": "public class SharedFlowSubscriptionScope<T> @PublishedApi internal constructor(\n    @PublishedApi internal val flow: SharedFlow<T>,\n    private val subscriptionWaitingFlow: MutableStateFlow<Int>\n) {}"
+},
+{
+"id": "comment-preservation",
+"input": "/**\n * Ideally, all this information should be received from the contest system.\n * Unfortunately, in the real world, it is not always possible, or information\n * can be not fully correct or convenient to display.\n */\nclass ContestConfigOverrides",
+"optofmt": "/**\n * Ideally, all this information should be received from the contest system.\n * Unfortunately, in the real world, it is not always possible, or information\n * can be not fully correct or convenient to display.\n */\nclass ContestConfigOverrides"
+},
+{
+"id": "grouped-declarations",
+"input": "typealias TeamId = StrongId<TeamTag>\ntypealias RunId = StrongId<RunTag>\ntypealias MessageId = StrongId<MessageTag>",
+"optofmt": "typealias TeamId = StrongId<TeamTag>\ntypealias RunId = StrongId<RunTag>\ntypealias MessageId = StrongId<MessageTag>"
+},
+{
+"id": "long-parameter-list",
+"input": "fun registerEventListener(eventType: EventType, listenerPriority: ListenerPriority, listenerCallback: EventListener) { installListener() }",
+"optofmt": "fun registerEventListener(\n    eventType: EventType,\n    listenerPriority: ListenerPriority,\n    listenerCallback: EventListener\n) {\n    installListener()\n}"
+},
+{
+"id": "elvis-wrap",
+"input": "fun f(): PetType { return findPetTypes.find { it.name == text } ?: throw ParseException(\"type not found: \" + text, 0) }",
+"optofmt": "fun f(): PetType {\n    return findPetTypes.find { it.name == text }\n        ?: throw ParseException(\"type not found: \" + text, 0)\n}"
+},
+{
+"id": "annotation-placement",
+"input": "@JvmName(\"other\") fun testSomething() {}",
+"optofmt": "@JvmName(\"other\")\nfun testSomething() {}"
+},
+{
+"id": "accessor-placement",
+"input": "val placeOfGetter: String get() = \"hello\"",
+"optofmt": "val placeOfGetter: String get() = \"hello\""
+},
+{
+"id": "control-flow-lambda",
+"input": "fun lambdasWithReturns(nullableString: String?) { nullableString?.let { return } }",
+"optofmt": "fun lambdasWithReturns(nullableString: String?) {\n    nullableString?.let { return }\n}"
+},
+{
+"id": "when-comma-condition",
+"input": "fun f(x: Int) {\nwhen (x) {\n0, 1 -> println(\"a or b\")\n}\n}",
+"optofmt": "fun f(x: Int) {\n    when (x) {\n        0, 1 -> println(\"a or b\")\n    }\n}"
+},
+{
+"id": "when-comma-condition-extra-1",
+"input": null,
+"optofmt": "fun f() {\n    when (it.resolvedCall.resultingDescriptor) {\n        is LocalVariableDescriptor,\n        is ValueParameterDescriptor,\n        is ReceiverParameterDescriptor -> true\n        else -> false\n    }\n}"
+},
+{
+"id": "generic-type-arg-economy",
+"input": "class C {\ninternal val pendingInitializationLambdas = IdentityHashMap<Entity<Any>, MutableList<(Entity<Any>) -> Unit>>()\n}",
+"optofmt": "class C {\n    internal val pendingInitializationLambdas =\n        IdentityHashMap<Entity<Any>, MutableList<(Entity<Any>) -> Unit>>()\n}"
+},
+{
+"id": "assign-introducer-attached",
+"input": "fun digest(algorithm: String): ByteString {\nval digestBytes = MessageDigest.getInstance(algorithm).run {\nupdate(data, 0, size)\ndigest()\n}\nreturn ByteString(digestBytes)\n}",
+"optofmt": "fun digest(algorithm: String): ByteString {\n    val digestBytes = MessageDigest.getInstance(algorithm).run {\n        update(data, 0, size)\n        digest()\n    }\n    return ByteString(digestBytes)\n}"
+},
+{
+"id": "assign-introducer-attached-extra-1",
+"input": null,
+"optofmt": "fun f() {\n    val raw = (\"Um, I'll tell you the problem with the scientific power that you're using here, \" +\n        \"it didn't require any discipline to attain it. You read what others had done and you \" +\n        \"took the next step. You didn't earn the knowledge for yourselves, so you don't take any \")\n}"
+},
+{
+"id": "assign-introducer-attached-extra-2",
+"input": null,
+"optofmt": "package org.jetbrains.exposed.sql.vendors\n\nval ANSI_SQL_2003_KEYWORDS: Set<String> = setOf(\n    \"A\",\n    \"ABS\",\n    \"ABSOLUTE\",\n    \"ACTION\",\n    \"ADA\",\n    \"ADD\",\n    \"ADMIN\",\n    \"AFTER\",\n    \"ALL\",\n    \"ALLOCATE\",\n    \"ALTER\",\n    \"ALWAYS\",\n    \"AND\",\n    \"ANY\",\n    \"ARE\",\n    \"ARRAY\",\n    \"AS\",\n    \"ASC\"\n)"
+},
+{
+"id": "argumentless-annotation-own-line",
+"input": "@DslMarker\nannotation class SqlDelightDsl",
+"optofmt": "@DslMarker\nannotation class SqlDelightDsl"
+},
+{
+"id": "argumentless-annotation-own-line-extra-1",
+"input": null,
+"optofmt": "class FooTest {\n    @Test\n    fun `kotlin-stdlib-1_9_20`(testInfo: TestInfo) = doTest(testInfo)\n}"
+},
+{
+"id": "argumentless-annotation-own-line-extra-2",
+"input": null,
+"optofmt": "class Database private constructor(val config: DatabaseConfig) {\n    var useNestedTransactions: Boolean = config.useNestedTransactions\n        @Deprecated(\"Use DatabaseConfig to define the useNestedTransactions\")\n        @TestOnly\n        set\n}"
+},
+{
+"id": "multi-supertype-list-one-per-line",
+"input": "internal abstract class ArrayValueExpressionMixin(node: ASTNode) :\n  SqlCompositeElementImpl(node),\n  SqlExpr,\n  PostgreSqlArrayValueExpression {\n  val x = 1\n}",
+"optofmt": "internal abstract class ArrayValueExpressionMixin(node: ASTNode) :\n    SqlCompositeElementImpl(node),\n    SqlExpr,\n    PostgreSqlArrayValueExpression {\n    val x = 1\n}"
+},
+{
+"id": "supertype-by-delegation-attached",
+"input": "private class SendBroadcast(val cont: CancellableContinuation<Boolean>) : Waiter by cont as CancellableContinuationImpl<Boolean>",
+"optofmt": "private class SendBroadcast(val cont: CancellableContinuation<Boolean>) : Waiter by cont\n    as CancellableContinuationImpl<Boolean>"
+},
+{
+"id": "small-overflow-tolerance",
+"input": "class C : RefactoringSupportProvider() {\n  override fun isMemberInplaceRenameAvailable(element: PsiElement, context: PsiElement?): Boolean {\n    return element is NamedElement\n  }\n}",
+"optofmt": "class C : RefactoringSupportProvider() {\n    override fun isMemberInplaceRenameAvailable(element: PsiElement, context: PsiElement?): Boolean {\n        return element is NamedElement\n    }\n}"
+},
+{
+"id": "small-overflow-tolerance-extra-1",
+"input": null,
+"optofmt": "public inline fun <E> buildList(@BuilderInference builderAction: MutableList<E>.() -> Unit): List<E> {\n    return listOf()\n}"
+},
+{
+"id": "trailing-comment-excluded-from-wrap",
+"input": "class DebugCoroutineInfo {\n    internal val creationStackBottom: CoroutineStackFrame? = source.creationStackBottom // field is used as of 1.4-M3\n}",
+"optofmt": "class DebugCoroutineInfo {\n    internal val creationStackBottom: CoroutineStackFrame? = source.creationStackBottom // field is used as of 1.4-M3\n}"
+},
+{
+"id": "raw-string-sole-arg-attached",
+"input": "fun f() {\n    js(\"\"\"\n        var error = new Error();\n        error.message = message;\n    \"\"\")\n}",
+"optofmt": "fun f() {\n    js(\"\"\"\n        var error = new Error();\n        error.message = message;\n    \"\"\")\n}"
+}
+]

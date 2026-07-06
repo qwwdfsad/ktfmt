@@ -50,6 +50,14 @@ internal class NBreak(
     // above line-count, so an attach-and-wrap layout beats a break-after-introducer one whenever both
     // fit, but overflow still forces the break. See [Metrics.introducerBreaks].
     val introducer: Boolean = false,
+    // RULES §3/§7: this break-after-`=` detaches a CALL-CHAIN right-hand side from its introducer.
+    // Ranked BELOW line-count (unlike [introducer]) so it only breaks a tie in favor of attaching —
+    // see [Metrics.chainIntroducerBreaks].
+    val chainIntroducer: Boolean = false,
+    // A FORCED break that is purely the chain's own inter-`.call` structure (§7), NOT a semantically
+    // required break. It is safe to flatten (`a().b()` reads fine on one line), so [NFlat] may suppress
+    // it — unlike a nested lambda-body statement break or an EOL comment, which must keep their lines.
+    val chainStructural: Boolean = false,
 ) : NDoc()
 
 /** Literal text — a source token or a single space. */
@@ -70,6 +78,16 @@ internal class NBlank(val wanted: BlankLineWanted) : NDoc()
  * surrounding breaks differently (e.g. `= rhs` vs. break-after-`=`).
  */
 internal class NAlt(val alts: List<NDoc>) : NDoc()
+
+/**
+ * A subtree forced to lay out flat (no internal breaks taken), used as one branch of an [NAlt] whose
+ * validity depends on the child fitting on one line. If the flat form overflows, this candidate's
+ * §1 cost carries that overflow, so the optimizer rejects it in favor of a sibling that wraps — e.g.
+ * a chain's "hang the trailing lambda on the receiver's line" layout is only legal while the receiver
+ * itself is single-line; wrapping it there would mis-indent the lambda body (see the trailing-lambda
+ * chain handling in the visitor).
+ */
+internal class NFlat(val child: NDoc) : NDoc()
 
 /** A source leaf — a real token or a comment — with its position, used by [NativeSink] to track
  * token offsets and interleave comments. */
@@ -265,6 +283,9 @@ class NativeSink(
   /** Append an already-built subtree to the current level. */
   internal fun appendSubtree(node: NDoc) = add(node)
 
+  /** Append an already-built subtree forced to lay out flat (see [NFlat]). */
+  internal fun appendFlatSubtree(node: NDoc) = add(NFlat(node))
+
   /**
    * Emit literal text WITHOUT advancing the source-token cursor. Unlike [token]/`emit`, this does not
    * try to match (and consume) a source leaf, so it is safe for punctuation synthesized between
@@ -323,6 +344,23 @@ class NativeSink(
   internal fun forcedIntroducerBreak(plusIndent: Indent) {
     resolvePending()
     pendingForced = NBreak(FillMode.FORCED, "", plusIndent, null, introducer = true)
+  }
+
+  /**
+   * Like [forcedIntroducerBreak] but for a CALL-CHAIN right-hand side (§3/§7): ranked below line
+   * count, so it only prefers attaching when that costs the same number of lines — see
+   * [NBreak.chainIntroducer] / [Metrics.chainIntroducerBreaks].
+   */
+  internal fun forcedChainIntroducerBreak(plusIndent: Indent) {
+    resolvePending()
+    pendingForced = NBreak(FillMode.FORCED, "", plusIndent, null, chainIntroducer = true)
+  }
+
+  /** A forced break that is only the chain's own inter-`.call` structure (§7); safe to flatten inside
+   * an [NFlat] hang candidate (see [NBreak.chainStructural]). */
+  internal fun forcedChainStructuralBreak(plusIndent: Indent) {
+    resolvePending()
+    pendingForced = NBreak(FillMode.FORCED, "", plusIndent, null, chainStructural = true)
   }
 
   override fun blankLineWanted(wanted: BlankLineWanted) {
@@ -455,6 +493,7 @@ class NativeRenderer(
         is NBlank -> 0
         // Flat, an alternative uses its flattest candidate (the one that can sit on one line).
         is NAlt -> doc.alts.minOf { flatWidth(it) }
+        is NFlat -> flatWidth(doc.child)
         is NLevel -> {
           var w = 0
           var sawEolComment = false
@@ -467,6 +506,23 @@ class NativeRenderer(
           }
           w
         }
+      }
+
+  /** True if [doc] contains anything that cannot be laid out flat: an EOL (`//`) comment (must end
+   * its line) or a semantically-required FORCED break — a nested lambda-body statement break, etc.
+   * A [NBreak.chainStructural] break is excluded (the chain's own `.call` structure flattens fine).
+   * An [NFlat] wrapping such content is not a valid candidate. */
+  private fun containsUnflattenable(doc: NDoc): Boolean =
+      when (doc) {
+        is NComment -> doc.eol
+        is NBreak -> doc.fillMode == FillMode.FORCED && !doc.chainStructural
+        is NLevel -> doc.children.any { containsUnflattenable(it) }
+        // Only the FLATTEST alternative is used when flattening (see [flatLayout]/[appendFlat]), so a
+        // forced break in a *non-flattest* alt (e.g. the break-after-`=` arm of a named argument's
+        // introducer emitAlt, whose attached arm is chosen when flat) does not make this unflattenable.
+        is NAlt -> doc.alts.minByOrNull { flatWidth(it) }?.let { containsUnflattenable(it) } ?: false
+        is NFlat -> containsUnflattenable(doc.child)
+        else -> false
       }
 
   /** Flat width of children[from] up to (not including) the next break — used to decide whether an
@@ -521,6 +577,7 @@ class NativeRenderer(
       val deepestIndent: Int, // deepest start-indent among wrapped (broken) lines
       val lastCol: Int, // end column of the still-open last line
       val introBreaks: Int, // count of taken introducer breaks (RULES §3, see NBreak.introducer)
+      val chainIntroBreaks: Int, // count of taken chain-RHS introducer breaks (RULES §3/§7)
       val emit: () -> Unit,
   )
 
@@ -534,6 +591,7 @@ class NativeRenderer(
         lines = l.lines + 1,
         deepestIndent = l.deepestIndent,
         introducerBreaks = l.introBreaks,
+        chainIntroducerBreaks = l.chainIntroBreaks,
     )
   }
 
@@ -572,6 +630,22 @@ class NativeRenderer(
           else listOf(breakTaken(a0, doc, indent), breakNotTaken(a0, doc))
         }
         is NAlt -> memo(doc, startCol, indent) { pareto(doc.alts.flatMap { layouts(it, startCol, indent) }) }
+        // Forced flat: only the single-line layout is offered, so its cost carries any overflow. But
+        // if the child CANNOT be flat (it contains a forced break or a non-last EOL `//` comment,
+        // flatWidth == BIG), flattening it would be wrong — it would swallow the comment's mandatory
+        // line break (commenting out whatever follows). Poison the candidate (worst = BIG) so §1
+        // rejects it in favor of a sibling that wraps.
+        is NFlat -> {
+          val fl = flatLayout(doc.child, startCol)
+          // An EOL `//` comment MUST end its line; flattening it would swallow the break and comment
+          // out whatever follows. Poison the flat candidate (worst = BIG) so §1 rejects it for a
+          // sibling that wraps. (Plain forced *layout* breaks are safe to flatten — the hang preamble
+          // relies on that — so only comments poison, not `flatWidth == BIG`.)
+          if (!containsUnflattenable(doc.child)) listOf(fl)
+          else listOf(
+              Layout(BIG, fl.overLines + 1, fl.overSum + BIG, fl.lines, fl.deepestIndent, fl.lastCol,
+                  fl.introBreaks, fl.chainIntroBreaks, fl.emit))
+        }
         is NLevel ->
             memo(doc, startCol, indent) {
               // A level can be flat unless it contains a forced break or a not-last EOL comment
@@ -611,7 +685,8 @@ class NativeRenderer(
         is NText -> for (a in frontier) next.add(appendText(a, k.text))
         is NComment -> for (a in frontier) next.add(extend(a, a.lastCol) { emitText(k.text) })
         is NLevel,
-        is NAlt ->
+        is NAlt,
+        is NFlat ->
             for (a in frontier) for (b in layouts(k, a.lastCol, base)) next.add(combine(a, b))
         is NBreak -> {
           // UNIFIED breaks fire together with their level (§4 all-or-nothing); FORCED always fire;
@@ -635,14 +710,17 @@ class NativeRenderer(
 
   // ---- Layout constructors (compose candidates; their emit thunks chain so render == cost) ------
 
-  private fun leaf(lastCol: Int, emit: () -> Unit): Layout = Layout(0, 0, 0, 0, 0, lastCol, 0, emit)
+  private fun leaf(lastCol: Int, emit: () -> Unit): Layout =
+      Layout(0, 0, 0, 0, 0, lastCol, 0, 0, emit)
 
   /** [a] followed by zero-break content ending at [newLastCol]; carries [a]'s completed lines. */
   private fun extend(a: Layout, newLastCol: Int, emit: () -> Unit): Layout =
-      Layout(a.worst, a.overLines, a.overSum, a.lines, a.deepestIndent, newLastCol, a.introBreaks) {
-        a.emit()
-        emit()
-      }
+      Layout(
+          a.worst, a.overLines, a.overSum, a.lines, a.deepestIndent, newLastCol, a.introBreaks,
+          a.chainIntroBreaks) {
+            a.emit()
+            emit()
+          }
 
   /**
    * [a] followed by a text token. A *multiline* token (a `"""…"""` string literal, whose text
@@ -679,7 +757,7 @@ class NativeRenderer(
     for (i in 1 until parts.size - 1) close(parts[i].trimStart().length) // reindented later
     return Layout(
         worst, overLines, overSum, lines, a.deepestIndent, parts.last().trimStart().length,
-        a.introBreaks) {
+        a.introBreaks, a.chainIntroBreaks) {
           a.emit()
           emitText(text)
         }
@@ -701,12 +779,13 @@ class NativeRenderer(
         is NBlank -> {}
         is NLevel -> d.children.forEach { walk(it) }
         is NAlt -> walk(d.alts.minByOrNull { flatWidth(it) }!!)
+        is NFlat -> walk(d.child)
       }
     }
     walk(doc)
     return Layout(
         acc.worst, acc.overLines, acc.overSum, acc.lines, acc.deepestIndent, acc.lastCol,
-        acc.introBreaks) {
+        acc.introBreaks, acc.chainIntroBreaks) {
           appendFlat(doc)
         }
   }
@@ -721,6 +800,7 @@ class NativeRenderer(
           deepestIndent = maxOf(a.deepestIndent, b.deepestIndent),
           lastCol = b.lastCol,
           introBreaks = a.introBreaks + b.introBreaks,
+          chainIntroBreaks = a.chainIntroBreaks + b.chainIntroBreaks,
           emit = { a.emit(); b.emit() },
       )
 
@@ -737,6 +817,7 @@ class NativeRenderer(
         deepestIndent = maxOf(a.deepestIndent, newIndent),
         lastCol = newIndent,
         introBreaks = a.introBreaks + (if (brk.introducer) 1 else 0),
+        chainIntroBreaks = a.chainIntroBreaks + (if (brk.chainIntroducer) 1 else 0),
         emit = {
           a.emit()
           if (brk.tag != null) taken[brk.tag] = true
@@ -749,7 +830,7 @@ class NativeRenderer(
   private fun breakNotTaken(a: Layout, brk: NBreak): Layout =
       Layout(
           a.worst, a.overLines, a.overSum, a.lines, a.deepestIndent, a.lastCol + brk.flat.length,
-          a.introBreaks, {
+          a.introBreaks, a.chainIntroBreaks, {
             a.emit()
             if (brk.tag != null) taken[brk.tag] = false
             emitText(brk.flat)
@@ -777,6 +858,7 @@ class NativeRenderer(
             a.lines <= b.lines &&
             a.deepestIndent <= b.deepestIndent &&
             a.introBreaks <= b.introBreaks &&
+            a.chainIntroBreaks <= b.chainIntroBreaks &&
             a.lastCol <= b.lastCol) {
           val strict =
               a.worst < b.worst ||
@@ -785,6 +867,7 @@ class NativeRenderer(
                   a.lines < b.lines ||
                   a.deepestIndent < b.deepestIndent ||
                   a.introBreaks < b.introBreaks ||
+                  a.chainIntroBreaks < b.chainIntroBreaks ||
                   a.lastCol < b.lastCol
           if (strict || i < j) {
             dominated = true
@@ -817,6 +900,7 @@ class NativeRenderer(
       is NBlank -> {}
       is NLevel -> doc.children.forEach { appendFlat(it) }
       is NAlt -> appendFlat(doc.alts.minByOrNull { flatWidth(it) }!!)
+      is NFlat -> appendFlat(doc.child)
     }
   }
 }

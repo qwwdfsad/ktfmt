@@ -40,24 +40,6 @@ internal class KmpAstVisitor(
     private val builder: LayoutSink,
     private val code: String,
 ) {
-  // optofmt §9: argument-less annotations that read as modifiers stay inline with the modifier run;
-  // every other annotation goes on its own line above the declaration. This is the inline set.
-  private val INLINE_MODIFIER_ANNOTATIONS =
-      setOf(
-          "PublishedApi",
-          "JvmStatic",
-          "JvmField",
-          "JvmSynthetic",
-          "JvmInline",
-          "JvmOverloads",
-          "JvmDefault",
-          "JvmDefaultWithoutCompatibility",
-          "Volatile",
-          "Transient",
-          "Synchronized",
-          "Strictfp",
-      )
-
   private val expressionBreakIndent: Indent.Const = Indent.Const.make(options.continuationIndent, 1)
   private val expressionBreakNegativeIndent: Indent.Const =
       Indent.Const.make(-options.continuationIndent, 1)
@@ -563,31 +545,32 @@ internal class KmpAstVisitor(
 
   private fun visitModifierList(list: KmpNode) {
     sync(list)
-    // §9 scopes the "annotation-with-args on its own line" treatment to annotations *directly above
+    // §12 scopes the "annotation-with-args on its own line" treatment to annotations *directly above
     // a declaration*. This same modifier-list walk also runs for parameter modifier lists (a value
     // parameter, a `catch` parameter, a lambda parameter) and for a *type* parameter (`<@Ann T>`),
-    // where §9's own example keeps the annotation inline (`@PublishedApi internal val flow: …`) and a
+    // where §12's own example keeps the annotation inline (`@PublishedApi internal val flow: …`) and a
     // compact header (`fun <@Ann T> …`) must not explode. So only force the own-line break for
     // declaration modifier lists, not parameter ones.
     val parentType = list.parent()?.type
-    val isParameterModifiers =
-        parentType == KtNodeTypes.VALUE_PARAMETER || parentType == KtNodeTypes.TYPE_PARAMETER
-    // optofmt §9: an annotation goes on its OWN line if it carries arguments (`@JvmName("other")`,
-    // `@Suppress("…")`, `@Deprecated(...)`) or is a non-modifier-like annotation (`@Test`); only
-    // argument-less *modifier-like* annotations (`@PublishedApi`, `@JvmStatic`, …) stay inline.
-    fun annotationNeedsOwnLine(child: KmpNode) =
-        child.type == KtNodeTypes.ANNOTATION_ENTRY &&
-            (child.child(KtNodeTypes.VALUE_ARGUMENT_LIST) != null ||
-                annotationShortName(child) !in INLINE_MODIFIER_ANNOTATIONS)
-    // Once ANY annotation on the declaration needs its own line, put EVERY annotation on its own line
-    // — never mix own-line and inline annotations on one declaration (that leaves an argument-carrying
-    // annotation glued to a preceding `@JvmStatic`, contradicting §9). A lone modifier-like annotation
-    // with no such sibling still stays inline. ktfmt keeps everything inline. (Not for parameter
-    // modifier lists — §9 keeps a parameter's annotations inline, e.g. `@PublishedApi internal val`.)
+    // optofmt §12: where an annotation sits depends on what it annotates and whether it has arguments.
+    // An ARGUMENT-LESS annotation stays INLINE only on a function/constructor value parameter or a
+    // primary constructor (`@PublishedApi internal constructor(`). A TYPE parameter keeps ALL its
+    // annotations inline (a break inside `<…>` is not done). Everywhere else — a with-arguments
+    // annotation, or any annotation on a regular property / function / class / `object` / accessor —
+    // the annotation goes on its own line directly above the declaration. (ktfmt keeps all inline.)
+    val isTypeParam = parentType == KtNodeTypes.TYPE_PARAMETER
+    val isValueParamOrConstructor =
+        parentType == KtNodeTypes.VALUE_PARAMETER || parentType == KtNodeTypes.PRIMARY_CONSTRUCTOR
+    fun annotationStaysInline(child: KmpNode): Boolean =
+        isTypeParam ||
+            (isValueParamOrConstructor && child.child(KtNodeTypes.VALUE_ARGUMENT_LIST) == null)
+    // All-or-nothing: once ANY annotation on the declaration must break, break EVERY annotation so an
+    // argument-carrying one is never left glued to an inline one.
     val breakEveryAnnotation =
         options.optofmt &&
-            !isParameterModifiers &&
-            list.meaningfulChildren().any { annotationNeedsOwnLine(it) }
+            list.meaningfulChildren().any {
+              it.type == KtNodeTypes.ANNOTATION_ENTRY && !annotationStaysInline(it)
+            }
     var onlyAnnotationsSoFar = true
     for (child in list.meaningfulChildren()) {
       if (child.type == KtNodeTypes.CONTEXT_RECEIVER_LIST) {
@@ -608,7 +591,7 @@ internal class KmpAstVisitor(
       } else if (onlyAnnotationsSoFar && !options.optofmt) {
         builder.breakOp(FillMode.UNIFIED, " ", ZERO)
       } else {
-        // optofmt §9: the modifier run (and argument-less annotations) stays on the declaration
+        // optofmt §9/§12: the modifier run (and argument-less annotations) stays on the declaration
         // line; only the parameter list wraps when the header is too long. A non-breaking space
         // prevents the modifiers from splitting apart. ktfmt drops each onto its own line.
         builder.space()
@@ -682,7 +665,10 @@ internal class KmpAstVisitor(
     val broken =
         sink.capture {
           if (isCallChain(rhsExpr)) {
-            sink.forcedBreak(expressionBreakIndent)
+            // §3/§7: break after `=` for a chain is penalized only below line-count, so §3 attaches
+            // the receiver-through-first-call when that fits without costing extra lines, but a chain
+            // whose receiver-first-call would overflow (or tear its args) still breaks after `=`.
+            sink.forcedChainIntroducerBreak(expressionBreakIndent)
             sink.appendSubtree(rhs)
           } else {
             block(expressionBreakIndent) {
@@ -692,13 +678,6 @@ internal class KmpAstVisitor(
           }
         }
     sink.emitAlt(listOf(attached, broken))
-  }
-
-  private fun annotationShortName(entry: KmpNode): String? {
-    val callee =
-        entry.meaningfulChildren().firstOrNull { it.type == KtNodeTypes.CONSTRUCTOR_CALLEE }
-            ?: return null
-    return callee.text.toString().substringBefore('<').substringAfterLast('.').trim()
   }
 
   private fun visitParameterList(node: KmpNode) {
@@ -1416,7 +1395,17 @@ internal class KmpAstVisitor(
         }
       }
       val base = node.meaningfulChildren().lastOrNull { it.type != KtNodeTypes.ANNOTATION_ENTRY }
+      // optofmt §12: an annotation that carries arguments (`@Suppress("…")`) always sits on its own
+      // line above what it annotates, even on a plain statement (`@Suppress(…) while (…) {}`) — a
+      // UNIFIED break would leave it glued when the line happens to fit. Scoped to statement position
+      // (parent BLOCK), matching the binary-expression branch; a lambda base keeps its `{` glue.
+      val forceAnnotationOwnLine =
+          options.optofmt &&
+              node.parent()?.type == KtNodeTypes.BLOCK &&
+              base?.type != KtNodeTypes.LAMBDA_EXPRESSION &&
+              annotations.any { it.child(KtNodeTypes.VALUE_ARGUMENT_LIST) != null }
       when {
+        forceAnnotationOwnLine -> builder.forcedBreak()
         (base?.type == KtNodeTypes.BINARY_EXPRESSION ||
             base?.type == KtNodeTypes.BINARY_WITH_TYPE) &&
             node.parent()?.type == KtNodeTypes.BLOCK -> builder.forcedBreak()
@@ -1584,8 +1573,26 @@ internal class KmpAstVisitor(
 
   private fun visitParenthesized(node: KmpNode) {
     sync(node)
+    val inner =
+        node.meaningfulChildren().firstOrNull { it.type != KtTokens.LPAR && it.type != KtTokens.RPAR }
+    if (System.getenv("PARENDBG") != null)
+        throw RuntimeException("PAREN node=${node.type} inner=${inner?.type} kids=${node.meaningfulChildren().map { it.type }}")
     emit("(")
-    visit(node.meaningfulChildren().firstOrNull { it.type != KtTokens.LPAR && it.type != KtTokens.RPAR })
+    // optofmt §5/§12: when the parenthesized body is an annotated expression (the expression-body
+    // idiom `= (@OptIn(…) expr)`), the `@Ann` must land on its own line at a proper indent. Give the
+    // parens the collapse-opener / stack-closer treatment (break after `(`, body one level in, `)`
+    // back at the opener indent) instead of gluing the annotation to `(` and drifting the body to the
+    // outer indent. Both breaks are UNIFIED, so a body that fits stays inline (§1). Other parenthesized
+    // bodies keep the plain inline emit — their own operators wrap per §6.
+    if (options.optofmt && inner?.type == KtNodeTypes.ANNOTATED_EXPRESSION) {
+      block(ZERO) {
+        builder.breakOp(FillMode.UNIFIED, "", expressionBreakIndent)
+        block(expressionBreakIndent) { visit(inner) }
+        builder.breakOp(FillMode.UNIFIED, "", ZERO)
+      }
+    } else {
+      visit(inner)
+    }
     emit(")")
   }
 
@@ -1837,13 +1844,18 @@ internal class KmpAstVisitor(
     // wraps its own contents at a single indent. Restricted to a known introducer set and to a
     // single (non-chained) operator, so long chains of other word operators still wrap normally.
     val isAttachedInfix = options.optofmt && opText in infixIntroducers && parts.size == 1
-    // optofmt §2: when the operator chain is the condition of an `if`/`while`, the surrounding
-    // parenthesis-break already supplies the one indent level, so the operands break at ZERO to
-    // avoid a second (drifting) continuation indent. Elsewhere (`val x = a && b`, an elvis in
-    // `return`) the chain supplies its own single indent.
+    // optofmt §2: when the surrounding context already supplies the one indent level for the wrapped
+    // operands, break them at ZERO to avoid a second (drifting) continuation indent — the operands
+    // then form a flat block at a single indent (§2/§6). This holds for an `if`/`while` condition (the
+    // parenthesis-break indents them) and for a call argument (`because("…" + "…")` — the argument
+    // list's break after `(` already puts the first operand one level in, so the rest align with it,
+    // not one deeper). Elsewhere (`val x = a && b`, an elvis in `return`) the first operand stays on
+    // the introducer's line and the chain supplies its own single continuation indent.
     val operandIndent =
         if (isAttachedInfix ||
-            (options.optofmt && node.parent()?.type == KtNodeTypes.CONDITION))
+            (options.optofmt &&
+                (node.parent()?.type == KtNodeTypes.CONDITION ||
+                    node.parent()?.type == KtNodeTypes.VALUE_ARGUMENT)))
             ZERO
         else expressionBreakIndent
 
@@ -1946,12 +1958,11 @@ internal class KmpAstVisitor(
   private fun isOneLineDeclaration(node: KmpNode): Boolean = !node.text.contains('\n')
 
   /**
-   * True when [args] is exactly one unnamed argument that is itself a call with a non-empty
-   * argument list — the shape optofmt §5 collapses (`outer(inner(args))`).
+   * True when [args] is exactly one argument (named or not) that is itself a call with a non-empty
+   * argument list — the shape optofmt §5 collapses (`outer(inner(args))`, or `outer(name = inner(args))`).
    */
   private fun isCollapsibleSoleCall(args: List<KmpNode>): Boolean {
     val sole = args.singleOrNull() ?: return false
-    if (sole.child(KtNodeTypes.VALUE_ARGUMENT_NAME) != null) return false
     val expr = sole.argumentExpression() ?: return false
     if (expr.type != KtNodeTypes.CALL_EXPRESSION) return false
     val innerArgs = expr.child(KtNodeTypes.VALUE_ARGUMENT_LIST) ?: return false
@@ -1963,8 +1974,18 @@ internal class KmpAstVisitor(
   private fun isLastArgUnnamedLambda(args: List<KmpNode>): Boolean {
     if (args.size < 2) return false
     val last = args.last()
-    return last.argumentExpression()?.type == KtNodeTypes.LAMBDA_EXPRESSION &&
-        last.child(KtNodeTypes.VALUE_ARGUMENT_NAME) == null
+    if (last.argumentExpression()?.type != KtNodeTypes.LAMBDA_EXPRESSION ||
+        last.child(KtNodeTypes.VALUE_ARGUMENT_NAME) != null)
+        return false
+    // optofmt §4: last-item expansion keeps the LEADING arguments inline on the opener line and lets
+    // only the final lambda expand. That reads well when the leading args are simple, but not when a
+    // leading arg is ITSELF a lambda (`Encryptor({ … }, { … }, { … })`): the leading lambdas can't
+    // stay on one line, so the call would fill (several lambdas per line, §4-forbidden). Fall through
+    // to the one-item-per-line layout instead.
+    if (options.optofmt &&
+        args.dropLast(1).any { it.argumentExpression()?.type == KtNodeTypes.LAMBDA_EXPRESSION })
+        return false
+    return true
   }
 
   private fun visitValueArgumentListInternal(
@@ -2148,13 +2169,21 @@ internal class KmpAstVisitor(
     emit("{")
     if (hasParams || hasArrow) {
       builder.space()
-      block(bracePlusExpressionIndent) { visitEachCommaSeparated(valueParams) }
+      // optofmt §13: the parameters are never separated from `{` — no leading break before the first
+      // parameter (with the `->` glue below, the whole `{ params ->` header stays on one line; an
+      // overflowing header wraps earlier, §3/§7). ktfmt allows the leading break.
+      block(bracePlusExpressionIndent) {
+        visitEachCommaSeparated(valueParams, leadingBreak = !options.optofmt)
+      }
       block(bracePlusBlockIndent) {
         if (paramList?.hasTrailingCommaAfter(valueParams.lastOrNull()) == true) {
           emit(",")
           builder.forcedBreak()
         } else if (hasParams) {
-          builder.breakOp(FillMode.INDEPENDENT, " ", ZERO)
+          // optofmt §13: never separate `->` from its parameters — keep `params ->` on one line even when
+          // the opener overflows (a fill break here would push `->` onto its own line). ktfmt allows
+          // the break.
+          if (options.optofmt) builder.space() else builder.breakOp(FillMode.INDEPENDENT, " ", ZERO)
         }
         emit("->")
       }
@@ -2251,24 +2280,38 @@ internal class KmpAstVisitor(
     var shouldCloseGroup = false
   }
 
+  /** A `.call { … }` whose selector carries a trailing lambda. */
+  private fun partHasTrailingLambda(part: KmpNode): Boolean =
+      part.qualifiedSelector()?.let { sel ->
+        sel.type == KtNodeTypes.CALL_EXPRESSION &&
+            sel.meaningfulChildren().any { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
+      } == true
+
   private fun emitQualifiedExpression(expression: KmpNode) {
     val parts = breakIntoParts(expression)
-    val useBlockLikeLambdaStyle = parts.last().isLambdaPart() && parts.count { it.isLambdaPart() } == 1
+    // optofmt §1/§7: a chain ending in a SOLE trailing lambda (`receiver.…run { … }`) has two
+    // rule-legal layouts — HANG the lambda on the chain's line (whole chain up to `{` on one line,
+    // body one indent below) or BREAK the chain per §7 (each `.call` on its own line, the trailing
+    // `.call {` last, its body one indent below). Rather than guess which with a heuristic, we emit
+    // BOTH as candidates and let §1 pick by line-count: the hang candidate forces its preamble FLAT
+    // ([NFlat]) so it is only viable while the whole chain fits on one line — otherwise it overflows
+    // and §1 takes the broken one. (See [emitChainWithHangableTrailingLambda].)
+    val soleTrailingLambda = parts.last().isLambdaPart() && parts.count { it.isLambdaPart() } == 1
+    if (options.optofmt && soleTrailingLambda) {
+      emitChainWithHangableTrailingLambda(parts)
+      return
+    }
+    // The gjf (non-optofmt) path keeps its block-like trailing lambda; optofmt non-sole-lambda chains
+    // never hang (each `.call` on its own line, §7).
+    val useBlockLikeLambdaStyle = soleTrailingLambda && !options.optofmt
     val groupingInfos = computeGroupingInfo(parts, useBlockLikeLambdaStyle)
-    // A `.call { … }` whose selector carries a trailing lambda.
-    fun partHasTrailingLambda(part: KmpNode): Boolean =
-        part.qualifiedSelector()?.let { sel ->
-          sel.type == KtNodeTypes.CALL_EXPRESSION &&
-              sel.meaningfulChildren().any { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
-        } == true
     // optofmt §1/§7: a trailing lambda on a call that stays grouped on the receiver's intro line
     // (`recv.first(x) { … }.tail()`) forces the whole chain multiline via the lambda's own body
     // breaks — even though the chain itself is not "too long for one line". Its trailing `.calls`
     // should stay attached to the lambda's `}` when they fit (`}.join()`), and only split one-per-line
-    // when they genuinely overflow (§7). We achieve this by emitting the breaks *after* such a part as
-    // INDEPENDENT (fill) rather than UNIFIED: in the forced-broken chain level, a fill break fires only
-    // when the run to the next break won't fit, so the tail attaches when it fits and breaks when it
-    // doesn't. `groupedLambdaEnd` is the index of that call part (−1 if none).
+    // when they genuinely overflow (§7). We emit the breaks *after* such a part as INDEPENDENT (fill)
+    // rather than UNIFIED: in the forced-broken chain level a fill break fires only when the run to
+    // the next break won't fit. `groupedLambdaEnd` is the index of that call part (−1 if none).
     val groupedLambdaEnd =
         if (!options.optofmt) -1
         else
@@ -2281,76 +2324,160 @@ internal class KmpAstVisitor(
                   partHasTrailingLambda(part)
             } ?: -1
     block(expressionBreakIndent) {
-      val nameTag = genSym()
-      for ((index, part) in parts.withIndex()) {
-        if (part.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
-            part.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) {
-          // Tail `.call` after a grouped multiline lambda attaches to `}` via a fill break — BUT only
-          // when it is itself a simple, lambda-free call (`}.join()`, `}.asFlow().flowOn(x)`). A tail
-          // call that carries its OWN trailing lambda is a full chain `.call` in the §7 sense and must
-          // sit on its own line (never filled/packed several per line), so it stays UNIFIED.
-          if (index > groupedLambdaEnd && groupedLambdaEnd >= 0 && !partHasTrailingLambda(part)) {
-            builder.breakOp(FillMode.INDEPENDENT, "", ZERO)
+      emitChainParts(
+          parts, groupingInfos, groupedLambdaEnd, genSym(), useBlockLikeLambdaStyle,
+          skipLastLambdaBody = false, forceBreaks = false)
+    }
+  }
+
+  /**
+   * §1/§7: emit a chain whose last part is a sole trailing lambda as two candidates — HANG (preamble
+   * flat, lambda body one indent below the chain line) vs. BROKEN (chain wraps per §7, the trailing
+   * `.call {` on its own line, body one indent below it) — and let §1 pick by line count. The hang
+   * candidate wraps its preamble in [NFlat] so it is only viable while the whole chain fits on one
+   * line; a wrapping chain makes it overflow and §1 falls to the broken candidate. This replaces the
+   * old `useBlockLikeLambdaStyle`/`parts.size==2` heuristics with a single principled choice.
+   */
+  private fun emitChainWithHangableTrailingLambda(parts: List<KmpNode>) {
+    val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
+    val groupingInfos = computeGroupingInfo(parts, useBlockLikeLambdaStyle = false)
+    val trailingSelector = parts.last().qualifiedSelector()
+    val lambda =
+        trailingSelector?.meaningfulChildren()?.firstOrNull { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
+    if (lambda == null) {
+      // Defensive: not the expected shape; fall back to the plain broken layout.
+      block(expressionBreakIndent) {
+        emitChainParts(
+            parts, groupingInfos, -1, genSym(), useBlockLikeLambdaStyle = false,
+            skipLastLambdaBody = false, forceBreaks = false)
+      }
+      return
+    }
+    val nameTag = genSym()
+    // Preamble = the whole chain with the trailing lambda's BODY omitted (…`.run` and any value args,
+    // no `{ … }`); it carries the §7 UNIFIED breaks between parts.
+    val preamble =
+        sink.capture {
+          emitChainParts(
+              parts, groupingInfos, -1, nameTag, useBlockLikeLambdaStyle = false,
+              skipLastLambdaBody = true, forceBreaks = true)
+        }
+    // The trailing lambda body (` { … }`), body one level below its enclosing line.
+    val body =
+        sink.capture {
+          sink.space()
+          visitArgumentInternal(lambda, wrapInBlock = false, brokeBeforeBrace = null)
+        }
+    val hang =
+        sink.capture {
+          block(expressionBreakIndent) {
+            sink.appendFlatSubtree(preamble)
+            block(expressionBreakNegativeIndent) { sink.appendSubtree(body) }
+          }
+        }
+    val broken =
+        sink.capture {
+          block(expressionBreakIndent) {
+            sink.appendSubtree(preamble)
+            sink.appendSubtree(body)
+          }
+        }
+    sink.emitAlt(listOf(hang, broken))
+  }
+
+  /** Emit the parts of a call chain into the current level (breaks + grouping + call elements). With
+   * [skipLastLambdaBody], the final part emits its `.call` and value args but NOT its trailing lambda
+   * (the caller emits that separately — see [emitChainWithHangableTrailingLambda]). */
+  private fun emitChainParts(
+      parts: List<KmpNode>,
+      groupingInfos: List<GroupingInfo>,
+      groupedLambdaEnd: Int,
+      nameTag: BreakTag,
+      useBlockLikeLambdaStyle: Boolean,
+      skipLastLambdaBody: Boolean,
+      forceBreaks: Boolean,
+  ) {
+    for ((index, part) in parts.withIndex()) {
+      if (part.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
+          part.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) {
+        // Tail `.call` after a grouped multiline lambda attaches to `}` via a fill break — BUT only
+        // when it is itself a simple, lambda-free call (`}.join()`). A tail call carrying its OWN
+        // trailing lambda is a full §7 `.call` and stays UNIFIED (its own line).
+        if (forceBreaks && !groupingInfos[index].shouldCloseGroup) {
+          // §7: force every subsequent `.call` onto its own line (the receiver-through-first-call
+          // stays grouped, so its break is not forced). Marked chain-structural so it is suppressed
+          // when this preamble is laid out flat inside an [NFlat] hang candidate — see
+          // [emitChainWithHangableTrailingLambda].
+          (builder as com.facebook.ktfmt.format.layout.NativeSink).forcedChainStructuralBreak(ZERO)
+        } else if (index > groupedLambdaEnd && groupedLambdaEnd >= 0 && !partHasTrailingLambda(part)) {
+          builder.breakOp(FillMode.INDEPENDENT, "", ZERO)
+        } else {
+          builder.breakOp(FillMode.UNIFIED, "", ZERO, Optional.of(nameTag))
+        }
+      }
+      repeat(groupingInfos[index].groupOpenCount) { builder.open(ZERO) }
+      when (part.type) {
+        KtNodeTypes.DOT_QUALIFIED_EXPRESSION,
+        KtNodeTypes.SAFE_ACCESS_EXPRESSION -> {
+          emit(part.operationSignValue())
+          val selector = part.qualifiedSelector()
+          if (selector?.type != KtNodeTypes.CALL_EXPRESSION) {
+            visit(selector)
+            if (groupingInfos[index].shouldCloseGroup) builder.close()
           } else {
-            builder.breakOp(FillMode.UNIFIED, "", ZERO, Optional.of(nameTag))
+            visit(selector.meaningfulChildren().firstOrNull()) // callee name
+            if (groupingInfos[index].shouldCloseGroup) builder.close()
+            val isLast = index == parts.size - 1
+            // gjf block-like style: the sole trailing lambda hangs off the chain (handled for optofmt
+            // by [emitChainWithHangableTrailingLambda] instead).
+            val isTrailingLambda = useBlockLikeLambdaStyle && isLast
+            if (isTrailingLambda) builder.close()
+            val lambdaArguments =
+                if (skipLastLambdaBody && isLast) emptyList()
+                else selector.meaningfulChildren().filter { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
+            // A grouped mid-chain lambda (`recv.first { … }.tail()`) always forces the chain to break,
+            // so its pullback is an unconditional constant (−1 level cancels the chain continuation
+            // indent). It can't be an `Indent.If` on [nameTag] — the native engine evaluates a level's
+            // indent at cost time, before the `.call` break that sets [nameTag] is walked.
+            val midChainLambdaGrouped = index == groupedLambdaEnd
+            // The last call's own argument list indents one level below the call — EXCEPT when the
+            // last call is the grouped receiver-through-first-call (`receiver.method(args)`), which
+            // sits on the introducer line, so its args land at the chain's single indent (ZERO extra).
+            // A last call that is a broken *subsequent* `.call(args)` (`…​.because("…" + "…")`) is on
+            // its own line, so its args must indent one level below it (not stay at the chain base —
+            // the old `if (isLast) ZERO` under-indented them, since the `Indent.If` on [nameTag] never
+            // resolves to the taken branch at cost time).
+            val argsIndentElse =
+                if (isLast) {
+                  // optofmt: a broken subsequent last call's args indent one level below it; the gjf
+                  // path (and a grouped receiver-through-first-call on the introducer line) keep ZERO.
+                  if (options.optofmt && !groupingInfos[index].shouldCloseGroup) expressionBreakIndent
+                  else ZERO
+                } else expressionBreakIndent
+            val lambdaIndentElse = if (isTrailingLambda) expressionBreakNegativeIndent else ZERO
+            val negLambdaIndentElse = if (isTrailingLambda) expressionBreakIndent else ZERO
+            visitCallElement(
+                callee = null,
+                typeArgumentList = selector.child(KtNodeTypes.TYPE_ARGUMENT_LIST),
+                argumentList = selector.child(KtNodeTypes.VALUE_ARGUMENT_LIST),
+                lambdaArguments = lambdaArguments,
+                argumentsIndent = Indent.If.make(nameTag, expressionBreakIndent, argsIndentElse),
+                lambdaIndent =
+                    if (midChainLambdaGrouped) expressionBreakNegativeIndent
+                    else Indent.If.make(nameTag, ZERO, lambdaIndentElse),
+                negativeLambdaIndent = Indent.If.make(nameTag, ZERO, negLambdaIndentElse),
+            )
           }
         }
-        repeat(groupingInfos[index].groupOpenCount) { builder.open(ZERO) }
-        when (part.type) {
-          KtNodeTypes.DOT_QUALIFIED_EXPRESSION,
-          KtNodeTypes.SAFE_ACCESS_EXPRESSION -> {
-            emit(part.operationSignValue())
-            val selector = part.qualifiedSelector()
-            if (selector?.type != KtNodeTypes.CALL_EXPRESSION) {
-              visit(selector)
-              if (groupingInfos[index].shouldCloseGroup) builder.close()
-            } else {
-              visit(selector.meaningfulChildren().firstOrNull()) // callee name
-              if (groupingInfos[index].shouldCloseGroup) builder.close()
-              val isTrailingLambda = useBlockLikeLambdaStyle && index == parts.size - 1
-              if (isTrailingLambda) builder.close()
-              // optofmt §2/§7: a trailing lambda on a NON-final call part that stays grouped on the
-              // receiver's intro line (`GlobalScope.launch(…) { … }.join()`) would otherwise stack the
-              // chain's continuation indent (+1) under the lambda's own block indent (+1), drifting the
-              // body a second level right and the `}` one level too deep. When the chain breaks, cancel
-              // the chain indent for this call element so the body sits exactly one level below the
-              // receiver line and the `}` at the receiver's indent. (A non-grouped part sits on its own
-              // broken `.call` line, where the body is already one level below it — no pullback.)
-              val midChainLambdaGrouped = index == groupedLambdaEnd
-              val argsIndentElse = if (index == parts.size - 1) ZERO else expressionBreakIndent
-              val lambdaIndentElse = if (isTrailingLambda) expressionBreakNegativeIndent else ZERO
-              val negLambdaIndentElse = if (isTrailingLambda) expressionBreakIndent else ZERO
-              // A grouped mid-chain lambda always forces the chain to break (its body carries forced
-              // breaks), so the pullback can be an unconditional constant: -1 level cancels the chain's
-              // continuation indent for this call element. It can't be an `Indent.If` on [nameTag] here
-              // — the native engine evaluates a level's indent at cost time, but the `.call` break that
-              // sets [nameTag] is walked *after* this part, so [nameTag] is unset when this indent is
-              // measured/captured.
-              val lambdaIndent =
-                  if (midChainLambdaGrouped) expressionBreakNegativeIndent
-                  else Indent.If.make(nameTag, ZERO, lambdaIndentElse)
-              visitCallElement(
-                  callee = null,
-                  typeArgumentList = selector.child(KtNodeTypes.TYPE_ARGUMENT_LIST),
-                  argumentList = selector.child(KtNodeTypes.VALUE_ARGUMENT_LIST),
-                  lambdaArguments =
-                      selector.meaningfulChildren().filter { it.type == KtNodeTypes.LAMBDA_ARGUMENT },
-                  argumentsIndent = Indent.If.make(nameTag, expressionBreakIndent, argsIndentElse),
-                  lambdaIndent = lambdaIndent,
-                  negativeLambdaIndent = Indent.If.make(nameTag, ZERO, negLambdaIndentElse),
-              )
-            }
-          }
-          KtNodeTypes.ARRAY_ACCESS_EXPRESSION -> {
-            visitArrayAccessBrackets(part)
-            builder.close()
-          }
-          KtNodeTypes.POSTFIX_EXPRESSION -> {
-            emit(part.meaningfulChildren().last().text.toString())
-            builder.close()
-          }
-          else -> visit(part)
+        KtNodeTypes.ARRAY_ACCESS_EXPRESSION -> {
+          visitArrayAccessBrackets(part)
+          builder.close()
         }
+        KtNodeTypes.POSTFIX_EXPRESSION -> {
+          emit(part.meaningfulChildren().last().text.toString())
+          builder.close()
+        }
+        else -> visit(part)
       }
     }
   }
@@ -2421,12 +2548,13 @@ internal class KmpAstVisitor(
     // `.call(...)` groups with its receiver no matter the receiver's name/casing (e.g.
     // `repository.query(…)`, `worker.execute(…) { … }`), then each subsequent `.call`/`.property`
     // wraps to its own line. (ktfmt's Google-style heuristic below only groups short/uppercase/`this`
-    // receivers.) But when the receiver is ITSELF a call (`QueryBuilder(false).also { … }`), that base
-    // call is already "the first call" — so `.also` must NOT group; it breaks to its own line and the
-    // base stays attached to the introducer (`= QueryBuilder(false)` on the `=` line, §7 "don't break
-    // after =").
+    // receivers.) This also groups the first call across a leading property/reference run
+    // (`DMLTestsData.Users.id.count()` — the first *call* is `.count()`), because the caller only
+    // consults this while still in that leading run (`lastIndexToOpen == 0`). But when the immediate
+    // receiver is ITSELF a call (`QueryBuilder(false).also { … }`, `a.b().c()`), that call is already
+    // "the first call" — so the following `.call` must NOT group; it breaks to its own line and the
+    // base stays attached to the introducer (§7 "don't break after =").
     if (options.optofmt &&
-        index == 1 &&
         current.type == KtNodeTypes.CALL_EXPRESSION &&
         previous.type != KtNodeTypes.CALL_EXPRESSION)
         return true

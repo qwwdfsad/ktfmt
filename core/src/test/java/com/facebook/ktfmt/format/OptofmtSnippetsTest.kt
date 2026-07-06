@@ -159,6 +159,61 @@ runsByTeamId.applyEvent(state)
       )
 
   /**
+   * §2: a `receiver.call(valueArg) { … }` (trailing lambda on a call that ALSO has value arguments)
+   * hangs the lambda body one indent below the call line — same as a sole trailing lambda. From
+   * kotlinx.coroutines AbstractCoroutineTest.kt:34. Regression: the hang candidate was wrongly
+   * poisoned because the named value arg's introducer `emitAlt` had a forced break in its
+   * (non-flattest) break-after-`=` arm, so §1 fell to a broken layout that over-indented the body.
+   */
+  @Test
+  fun `call-with-value-arg-and-trailing-lambda-hangs`() =
+      check(
+          input =
+              """fun f() {
+    coroutine.invokeOnCompletion(onCancelling = true) {
+        assertNull(it)
+        expect(7)
+    }
+}""",
+          expected =
+              """fun f() {
+    coroutine.invokeOnCompletion(onCancelling = true) {
+        assertNull(it)
+        expect(7)
+    }
+}""",
+      )
+
+  /**
+   * The exact AbstractCoroutineTest.kt:34 case: the same `receiver.call(valueArg) { … }` nested one
+   * level deeper (inside a method), where the lambda body must hang at one indent below the call line
+   * (col 12) — not over-indent to col 16 as it did before the [containsUnflattenable] flattest-alt fix.
+   */
+  @Test
+  fun `call-with-value-arg-and-trailing-lambda-hangs-nested`() =
+      check(
+          input =
+              """
+class AbstractCoroutineTest {
+    fun testNotifications() {
+        coroutine.invokeOnCompletion(onCancelling = true) {
+            assertNull(it)
+            expect(7)
+        }
+    }
+}""",
+          expected =
+              """class AbstractCoroutineTest {
+    fun testNotifications() {
+        coroutine.invokeOnCompletion(onCancelling = true) {
+            assertNull(it)
+            expect(7)
+        }
+    }
+}""",
+      )
+
+  /**
    * §7: in a member-access chain, each subsequent `.call` sits on its own line — never filled
    * several per line — even when every call carries its own trailing lambda. Regression: the
    * grouped-lambda tail-attach path (for `}.join()`-style lambda-free tails) was filling these
@@ -328,6 +383,341 @@ class C {
                 .toString()
         }
     }
+}""",
+      )
+
+  /**
+   * §3/§7: a chain ending in a trailing-lambda call (`… .where { predicate }`) where the lambda call
+   * is a LATER link (not applied directly to the receiver) keeps the receiver-through-first-call on
+   * the `=` introducer line and breaks the trailing-lambda `.call` to its own line — rather than
+   * hanging the lambda (which, being one line longer, would lose to a needless break after `=`). From
+   * Exposed AdjustQueryTests.kt:109. Regression: the sole trailing lambda was hung block-like even
+   * when it was a later link, forcing break-after-`=`.
+   */
+  @Test
+  fun `chain-trailing-lambda-later-link-breaks-to-own-line`() =
+      check(
+          input =
+              """
+class AdjustQueryTests {
+    fun testQueryOrWhere() {
+        withCitiesAndUsers { cities, users, _ ->
+            val queryAdjusted = (users innerJoin cities).select(users.name, cities.name).where { predicate }
+        }
+    }
+}""",
+          expected =
+              """class AdjustQueryTests {
+    fun testQueryOrWhere() {
+        withCitiesAndUsers { cities, users, _ ->
+            val queryAdjusted = (users innerJoin cities).select(users.name, cities.name)
+                .where { predicate }
+        }
+    }
+}""",
+      )
+
+  /**
+   * §7: "receiver through its first call" spans a leading property/reference run — the first *call*
+   * in `DMLTestsData.Users.id.count()` is `.count()`, so `DMLTestsData.Users.id.count()` stays on the
+   * `=` introducer line and the next call (`.eq(…)`) breaks to its own line. From Exposed
+   * AdjustQueryTests.kt:123. Regression: the leading property run grouped without the first call, so
+   * `.count()` AND `.eq()` both broke (3 lines), losing to a needless break after `=` (2 lines).
+   */
+  @Test
+  fun `chain-receiver-through-first-call-spans-property-run`() =
+      check(
+          input =
+              """
+class AdjustQueryTests {
+    fun testAdjustQueryHaving() {
+        withCitiesAndUsers { cities, users, _ ->
+            val predicateHaving = DMLTestsData.Users.id.count().eq<Number, Long, Int>(DMLTestsData.Cities.id.max())
+        }
+    }
+}""",
+          expected =
+              """class AdjustQueryTests {
+    fun testAdjustQueryHaving() {
+        withCitiesAndUsers { cities, users, _ ->
+            val predicateHaving = DMLTestsData.Users.id.count()
+                .eq<Number, Long, Int>(DMLTestsData.Cities.id.max())
+        }
+    }
+}""",
+      )
+
+  /**
+   * §2: `receiver.run { … }` where the receiver is a call that WRAPS its arguments. The receiver
+   * wraps and `.run {` breaks to its own line; the lambda body must then indent one level below `.run`
+   * (§2), not sit at `.run`'s column. From Exposed Algorithms.kt:33-45. Regression: the trailing-lambda
+   * body was one level too shallow — the native engine can't pick the body indent via an `Indent.If`
+   * keyed on the chain break, so it always used the "hang" indent even when the chain broke. Fixed by
+   * offering hang vs. broken as explicit candidates (the hang one forces the receiver flat).
+   */
+  @Test
+  fun `scoping-call-on-wrapping-receiver-indents-body`() =
+      check(
+          input =
+              """
+object Algorithms {
+    fun AES_256_PBE_GCM(password: CharSequence, salt: CharSequence): Encryptor {
+        return AesBytesEncryptor(password.toString(), salt, KeyGenerators.secureRandom(BLOCK_LEN), AesBytesEncryptor.CipherAlgorithm.GCM).run {
+            makeEncryptor()
+            finalizeSetup()
+        }
+    }
+}""",
+          expected =
+              """object Algorithms {
+    fun AES_256_PBE_GCM(password: CharSequence, salt: CharSequence): Encryptor {
+        return AesBytesEncryptor(
+                password.toString(),
+                salt,
+                KeyGenerators.secureRandom(BLOCK_LEN),
+                AesBytesEncryptor.CipherAlgorithm.GCM
+            )
+            .run {
+                makeEncryptor()
+                finalizeSetup()
+            }
+    }
+}""",
+      )
+
+  /**
+   * The [scoping-call-on-wrapping-receiver-indents-body] fix must not regress a sole trailing lambda
+   * whose receiver fits on one line: it still hangs block-like with the body one level below.
+   */
+  @Test
+  fun `scoping-call-on-fitting-receiver-hangs`() =
+      check(
+          input =
+              """fun f(): X = Foo(alpha, beta).apply { firstStatement(); secondStatement() }""",
+          expected =
+              """fun f(): X = Foo(alpha, beta).apply {
+    firstStatement()
+    secondStatement()
+}""",
+      )
+
+  /**
+   * §4: a call with MULTIPLE lambda arguments (`Encryptor({ … }, { … }, { … })`) that doesn't fit on
+   * one line splits one-item-per-line — never fills (several lambdas per line). From Exposed
+   * Algorithms.kt:40-45. Regression: the §4 last-item-expansion path kept the leading args inline, but
+   * with lambda leading args that produced a fill (`Encryptor({ … }, {` / body / `}, {` / …)).
+   */
+  @Test
+  fun `call-with-multiple-lambda-args-splits-one-per-line`() =
+      check(
+          input =
+              """fun f(): Encryptor {
+    return Encryptor({ base64Encoder.encodeToString(encrypt(it.toByteArray())) }, { String(decrypt(base64Decoder.decode(it))) }, { inputLen -> base64EncodedLength(inputLen) })
+}""",
+          expected =
+              """fun f(): Encryptor {
+    return Encryptor(
+        { base64Encoder.encodeToString(encrypt(it.toByteArray())) },
+        { String(decrypt(base64Decoder.decode(it))) },
+        { inputLen -> base64EncodedLength(inputLen) }
+    )
+}""",
+      )
+
+  /**
+   * §1/§7: when the receiver-through-first-call is too long to attach to the `=` line, §1 (minimize
+   * overflow) forces the break after `=`; the chain then sits at a SINGLE indent — receiver and every
+   * subsequent `.call` all one level below the `val` line, never a second level (§7 "do not add a
+   * second indent level"). From Exposed AliasesTests.kt:120 (deeply nested, so `= receiver…select(…)`
+   * overflows). This is the correct forced-break-after-`=` layout, NOT a bug — it is the same
+   * single-indent form the `commonConfiguration` case established.
+   */
+  @Test
+  fun `chain-forced-break-after-eq-stays-single-indent`() =
+      check(
+          input =
+              """
+class AliasesTests {
+    fun aliasedQuery() {
+        withTables(EntityTestsData.XTable, EntityTestsData.YTable) {
+            val aliasedQuery = EntityTestsData.XTable.select(EntityTestsData.XTable.b1, aliasedExpression).groupBy(EntityTestsData.XTable.b1).alias("maxBoolean")
+        }
+    }
+}""",
+          expected =
+              """class AliasesTests {
+    fun aliasedQuery() {
+        withTables(EntityTestsData.XTable, EntityTestsData.YTable) {
+            val aliasedQuery =
+                EntityTestsData.XTable.select(EntityTestsData.XTable.b1, aliasedExpression)
+                .groupBy(EntityTestsData.XTable.b1)
+                .alias("maxBoolean")
+        }
+    }
+}""",
+      )
+
+  /**
+   * §2/§6: a `+`-concatenation as a call argument forms a flat block — every operand at ONE shared
+   * indent (one level below the call opener), never drifting a second level. And when the call is a
+   * broken subsequent link of a chain (`…​.because("…" + "…")`), its argument list still indents one
+   * level below THAT call (not the chain base). From kotlinx.coroutines AuxBuildConfiguration.kt:38-46.
+   * Regression: the concat's second operand drifted to +2, and the chain call's args under-indented.
+   */
+  @Test
+  fun `concat-argument-is-flat-block-in-chain`() =
+      check(
+          input =
+              """
+fun f() {
+    resolutionStrategy.dependencySubstitution {
+        substitute(module("org.jetbrains.kotlinx:core")).using(project(":core")).because("Because Kotlin compiler embeddable leaks coroutines into the runtime classpath, " + "triggering all sort of incompatible class changes errors")
+    }
+}""",
+          expected =
+              """fun f() {
+    resolutionStrategy.dependencySubstitution {
+        substitute(module("org.jetbrains.kotlinx:core"))
+            .using(project(":core"))
+            .because(
+                "Because Kotlin compiler embeddable leaks coroutines into the runtime classpath, " +
+                "triggering all sort of incompatible class changes errors"
+            )
+    }
+}""",
+      )
+
+  /** §2/§6: the same flat-operand rule for a `+`-concat as a direct (non-chained) call argument. */
+  @Test
+  fun `concat-argument-is-flat-block-direct`() =
+      check(
+          input =
+              """fun f() {
+    check("Because Kotlin compiler embeddable leaks coroutines into the runtime classpath here now, " + "triggering all sort of incompatible class changes errors")
+}""",
+          expected =
+              """fun f() {
+    check(
+        "Because Kotlin compiler embeddable leaks coroutines into the runtime classpath here now, " +
+        "triggering all sort of incompatible class changes errors"
+    )
+}""",
+      )
+
+  /**
+   * §12 (2026-07-06 rule): an argument-less annotation goes on its OWN line above a regular
+   * (standalone) property — it stays inline only on a value parameter, parameter-property, or primary
+   * constructor. Regression: `@JvmStatic`/`@Volatile` on a property used to stay inline (the old
+   * `INLINE_MODIFIER_ANNOTATIONS` set applied to all declarations).
+   */
+  @Test
+  fun `argumentless-annotation-on-regular-property-own-line`() =
+      check(
+          input =
+              """class C {
+    @JvmStatic val instance = create()
+    @Volatile var running = false
+}""",
+          expected =
+              """class C {
+    @JvmStatic
+    val instance = create()
+    @Volatile
+    var running = false
+}""",
+      )
+
+  /**
+   * §12: an argument-less annotation stays inline on a primary constructor and on parameter-properties;
+   * only annotations that carry arguments (or ones on non-parameter declarations) break to their own
+   * line.
+   */
+  @Test
+  fun `argumentless-annotation-on-constructor-and-parameter-inline`() =
+      check(
+          input =
+              """public class Scope<T> @PublishedApi internal constructor(@PublishedApi internal val flow: SharedFlow<T>, private val waiting: MutableStateFlow<Int>) {}""",
+          expected =
+              """public class Scope<T> @PublishedApi internal constructor(
+    @PublishedApi internal val flow: SharedFlow<T>,
+    private val waiting: MutableStateFlow<Int>
+) {}""",
+      )
+
+  /**
+   * §12: an annotation that carries arguments goes on its OWN line above what it annotates — even on a
+   * plain statement, not just a declaration. Here `@Suppress("…") while (…) {}` splits the annotation
+   * onto its own line although the whole thing fits in 100 columns. From kotlinx.coroutines
+   * BufferedChannel.kt:1411. Regression: a UNIFIED break kept it glued while it fit.
+   */
+  @Test
+  fun `argument-carrying-annotation-on-statement-own-line`() =
+      check(
+          input =
+              """fun f() {
+    @Suppress("ControlFlowWithEmptyBody") while (bufferEndCounter <= globalIndex) {}
+}""",
+          expected =
+              """fun f() {
+    @Suppress("ControlFlowWithEmptyBody")
+    while (bufferEndCounter <= globalIndex) {}
+}""",
+      )
+
+  /**
+   * §13: a lambda's `->` never separates from its parameters: `{ continuation ->` stays on one line even
+   * when the opener is too long — optofmt breaks earlier (here after `=`) rather than dropping `->`
+   * onto its own line. From kotlinx.coroutines BufferedChannel.kt:129.
+   */
+  /**
+   * §13: a lambda's parameters never separate from `{` either: `{ cont ->` stays whole even when the
+   * opener is too long — optofmt breaks earlier (after `=`) rather than dropping the parameter to its
+   * own line (`{\n    cont ->`). From kotlinx.coroutines BufferedChannel.kt:220.
+   */
+  @Test
+  fun `lambda-params-never-separate-from-brace`() =
+      check(
+          input =
+              """class C {
+    internal open suspend fun sendBroadcast(element: E): Boolean = suspendCancellableCoroutine {
+        cont ->
+        check(onUndeliveredElement == null) { "msg" }
+        sendImpl(element, SendBroadcast(cont))
+    }
+}""",
+          expected =
+              """class C {
+    internal open suspend fun sendBroadcast(element: E): Boolean =
+        suspendCancellableCoroutine { cont ->
+            check(onUndeliveredElement == null) { "msg" }
+            sendImpl(element, SendBroadcast(cont))
+        }
+}""",
+      )
+
+  @Test
+  fun `lambda-arrow-never-separates-from-params`() =
+      check(
+          input =
+              """class C {
+    private suspend fun onClosedSend(element: E): Unit = suspendCancellableCoroutine { continuation ->
+        onUndeliveredElement?.foo(element)?.let {
+            it.addSuppressed(sendException)
+            return@suspendCancellableCoroutine
+        }
+        continuation.resumeWithStackTrace(sendException)
+    }
+}""",
+          expected =
+              """class C {
+    private suspend fun onClosedSend(element: E): Unit =
+        suspendCancellableCoroutine { continuation ->
+            onUndeliveredElement?.foo(element)?.let {
+                it.addSuppressed(sendException)
+                return@suspendCancellableCoroutine
+            }
+            continuation.resumeWithStackTrace(sendException)
+        }
 }""",
       )
 
