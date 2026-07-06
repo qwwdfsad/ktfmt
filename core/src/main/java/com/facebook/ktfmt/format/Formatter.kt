@@ -75,9 +75,11 @@ object Formatter {
           // optofmt implies the gjf-free native layout engine (the only engine that applies these
           // rules); other styles use google-java-format.
           optofmt = true,
-          // optofmt §1 reformats by global optimization ("don't wrap what fits"), so it does NOT
-          // preserve author-authored lambda line breaks — a control-flow lambda like
-          // `?.let { return }` collapses to one line when it fits, regardless of input layout.
+          // optofmt §1 reformats by global optimization ("don't wrap what fits"): a lambda whose
+          // header sits on one line in the input (`?.let { return }`) collapses when it fits. It is
+          // NOT the blanket preserveLambdaBreaks behavior (any newline anywhere pins the lambda open);
+          // instead optofmt honors a targeted signal — a line break right after `->`/`{` (§13) or
+          // after `(`/`[` for lists (§4) — handled in the visitor, so this flag stays off.
           preserveLambdaBreaks = false,
       )
 

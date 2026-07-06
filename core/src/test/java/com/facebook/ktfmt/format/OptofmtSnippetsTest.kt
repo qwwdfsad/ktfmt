@@ -851,6 +851,61 @@ typealias MessageId = StrongId<MessageTag>""",
 }""")
   }
 
+  /**
+   * §4 custom formatting: a line break right after `(` forces a call's arguments one-per-line even
+   * though they would fit on a single line; without the break the same call collapses. The forced
+   * form carries a §14 trailing comma and is idempotent.
+   */
+  @Test
+  fun `custom-expand-call-args-after-open-paren`() {
+    check(input = """val x = foo(a, b, c)""", expected = """val x = foo(a, b, c)""")
+    check(
+        input = "val x = foo(\n    a, b, c)",
+        expected =
+            """val x = foo(
+    a,
+    b,
+    c,
+)""")
+  }
+
+  /**
+   * §4 custom formatting: a line break right after `(` in a declaration's parameter list keeps the
+   * parameters one-per-line even though they fit; removing the break collapses them.
+   */
+  @Test
+  fun `custom-expand-parameter-list-after-open-paren`() {
+    check(input = """fun f(a: Int, b: Int) {}""", expected = """fun f(a: Int, b: Int) {}""")
+    check(
+        input = "fun f(\n    a: Int, b: Int) {}",
+        expected =
+            """fun f(
+    a: Int,
+    b: Int,
+) {}""")
+  }
+
+  /**
+   * §13 custom formatting: a line break right after the lambda header (`->`, or `{` when there are
+   * no parameters) keeps the body on its own line instead of collapsing to `{ … }`.
+   */
+  @Test
+  fun `custom-expand-lambda-after-arrow-or-brace`() {
+    check(input = """val x = items.map { it -> it.name }""", expected = """val x = items.map { it -> it.name }""")
+    check(
+        input = "val x = items.map { it ->\n    it.name }",
+        expected =
+            """val x = items.map { it ->
+    it.name
+}""")
+    check(
+        input = "val x = run {\n    doThing() }",
+        expected =
+            """val x = run {
+    doThing()
+}""")
+  }
+
   @Test
   fun `elvis-wrap`() =
       check(

@@ -433,6 +433,8 @@ internal class KmpAstVisitor(
                 wrapInBlock = false,
                 breakBeforePostfix = true,
                 trailingCommaWhenBroken = true,
+                forceExpand =
+                    options.optofmt && parameterList.hasLineBreakAfterOpener(KtTokens.LPAR),
             )
           }
           emitTypeOrDelegationCall {
@@ -710,6 +712,7 @@ internal class KmpAstVisitor(
         wrapInBlock = false,
         breakBeforePostfix = true,
         trailingCommaWhenBroken = true,
+        forceExpand = options.optofmt && node.hasLineBreakAfterOpener(KtTokens.LPAR),
     )
   }
 
@@ -1471,7 +1474,8 @@ internal class KmpAstVisitor(
           prefix = "[",
           postfix = "]",
           wrapInBlock = true,
-          trailingCommaWhenBroken = true)
+          trailingCommaWhenBroken = true,
+          forceExpand = options.optofmt && node.hasLineBreakAfterOpener(KtTokens.LBRACKET))
     }
   }
 
@@ -2129,6 +2133,9 @@ internal class KmpAstVisitor(
         postfix = ")",
         breakAfterPrefix = breakAfterPrefix,
         trailingCommaWhenBroken = true,
+        // §4 custom formatting: a line break right after `(` keeps the arguments one-per-line.
+        forceExpand =
+            options.optofmt && !isSingleUnnamedLambda && list.hasLineBreakAfterOpener(KtTokens.LPAR),
     )
   }
 
@@ -2235,10 +2242,16 @@ internal class KmpAstVisitor(
       block(bracePlusBlockIndent) {
         builder.blankLineWanted(BlankLineWanted.NO)
         val shouldForceMultiline =
-            options.preserveLambdaBreaks &&
+            (options.preserveLambdaBreaks &&
                 functionLiteral.descendants().any {
                   it.type in KtTokens.WHITESPACES && it.text.contains('\n')
-                }
+                }) ||
+                // §13 custom formatting: a line break right after the lambda header — `->`, or `{`
+                // when the lambda has no parameters — keeps the body on its own line(s) instead of
+                // collapsing to `{ … }`, even when it would fit.
+                (options.optofmt &&
+                    functionLiteral.hasLineBreakAfterOpener(
+                        if (hasArrow) KtTokens.ARROW else KtTokens.LBRACE))
         val single =
             !shouldForceMultiline &&
                 statements.size == 1 &&
@@ -2668,6 +2681,10 @@ internal class KmpAstVisitor(
       // Set only where Kotlin permits a trailing comma (call arguments, value parameters, collection
       // literals) — NOT a supertype list, function-type parameters, or a `where` clause.
       trailingCommaWhenBroken: Boolean = false,
+      // optofmt §4 (custom formatting): force the list to stay one-per-line even when it would fit on
+      // a single line — set when the author put a line break right after the opening `(`/`[`. Turns
+      // every list break FORCED, so the layout is the same one-per-line form the overflow case yields.
+      forceExpand: Boolean = false,
   ): BreakTag? {
     // optofmt §4: never emit a trailing comma, and don't let a source one force the split — ignore
     // it entirely so the list is laid out compact-or-fully-split on its own merits. Only on the
@@ -2685,7 +2702,7 @@ internal class KmpAstVisitor(
       }
     }
 
-    val breakType = if (hasTrailingComma) FillMode.FORCED else FillMode.UNIFIED
+    val breakType = if (hasTrailingComma || forceExpand) FillMode.FORCED else FillMode.UNIFIED
     fun emitComma() {
       emit(",")
       if (breakable) builder.breakOp(breakType, " ", ZERO) else builder.space()
@@ -2885,6 +2902,29 @@ private fun KmpNode.argumentExpression(): KmpNode? =
     meaningfulChildren().lastOrNull {
       it.type != KtNodeTypes.VALUE_ARGUMENT_NAME && it.type != KtTokens.EQ && it.type != KtTokens.MUL
     }
+
+/**
+ * Whether the source places a line break immediately after this node's opening delimiter [opener]
+ * (before the first following element), skipping intervening comments. This is a deliberate,
+ * author-directed request to keep the construct expanded one-per-line even when it would fit on a
+ * single line (RULES §4 custom formatting).
+ */
+private fun KmpNode.hasLineBreakAfterOpener(
+    opener: com.intellij.platform.syntax.SyntaxElementType
+): Boolean {
+  val kids = children()
+  val openIdx = kids.indexOfFirst { it.type == opener }
+  if (openIdx < 0) return false
+  for (i in openIdx + 1 until kids.size) {
+    val k = kids[i]
+    when {
+      k.type in KtTokens.WHITESPACES -> if (k.text.contains('\n')) return true
+      k.type in KtTokens.COMMENTS -> {} // a comment between opener and first element: keep scanning
+      else -> return false // reached the first real element with no newline before it
+    }
+  }
+  return false
+}
 
 /** Whether a COMMA appears after [lastItem] among this node's children (a trailing comma). */
 private fun KmpNode.hasTrailingCommaAfter(lastItem: KmpNode?): Boolean {
