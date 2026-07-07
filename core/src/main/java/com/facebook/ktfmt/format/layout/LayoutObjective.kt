@@ -72,12 +72,13 @@ internal constructor(
     val introducerBreaks: Int,
     /**
      * How many break-after-`=` introducer breaks are taken specifically for a CALL-CHAIN right-hand
-     * side (RULES §3/§7). Unlike [introducerBreaks] this is ranked BELOW [lines] in
-     * [Objectives.DEFAULT], so it only breaks a tie: when attaching a chain's receiver-through-first-
-     * call to the introducer and breaking after it cost the same number of lines, §3 prefers the
-     * attached one — but when attaching would need MORE lines (it would have to tear the first call's
-     * arguments to fit), the lower line count wins first, so the chain breaks after `=` instead of
-     * tearing (the commonConfiguration case). Monotone and column-independent, so Pareto-safe.
+     * side (RULES §3/§7). Ranked directly after [introducerBreaks] and ABOVE [lines]: §7 says "do not
+     * break after `=`/`:` to start the chain," so attaching the receiver-through-first-call wins
+     * whenever it fits — even at the cost of extra lines (the subsequent `.call`s then wrap
+     * one-per-line). The receiver-through-first-call is held FLAT (its own args never wrap — see
+     * `flatIntroArgs` in [KmpAstVisitor]), so when it can't fit on the introducer line the attached
+     * candidate overflows and the top [worstOverflow] tier forces the break-after-`=`. Monotone and
+     * column-independent, so Pareto-safe.
      */
     val chainIntroducerBreaks: Int,
 )
@@ -126,8 +127,8 @@ object Objectives {
             it.worstOverflow,
             it.overflowLines,
             it.introducerBreaks,
-            it.lines,
             it.chainIntroducerBreaks,
+            it.lines,
             it.deepestIndent)
       }
 

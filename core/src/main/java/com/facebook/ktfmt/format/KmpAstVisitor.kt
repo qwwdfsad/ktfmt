@@ -1855,7 +1855,9 @@ internal class KmpAstVisitor(
           // A bare type (function-type parameter like `Int`) has no name and no colon.
           if (name != null) {
             emit(":")
-            builder.breakOp(FillMode.UNIFIED, " ", ZERO)
+            // §9: the type glues to its `:` — never break right after the colon to push the type onto
+            // its own line (a non-breaking space for optofmt; ktfmt allows the break).
+            if (options.optofmt) builder.space() else builder.breakOp(FillMode.UNIFIED, " ", ZERO)
           }
           visit(type)
         }
@@ -2423,7 +2425,7 @@ internal class KmpAstVisitor(
     block(expressionBreakIndent) {
       emitChainParts(
           parts, groupingInfos, groupedLambdaEnd, genSym(), useBlockLikeLambdaStyle,
-          skipLastLambdaBody = false, forceBreaks = false)
+          skipLastLambdaBody = false, forceBreaks = false, flatIntroArgs = options.optofmt)
     }
   }
 
@@ -2493,6 +2495,12 @@ internal class KmpAstVisitor(
       useBlockLikeLambdaStyle: Boolean,
       skipLastLambdaBody: Boolean,
       forceBreaks: Boolean,
+      // optofmt §7: hold the grouped receiver-through-first-call's OWN argument list flat, so the
+      // first call never wraps its args — it fits whole on the chain's first line or overflows. As an
+      // introducer RHS this makes the chain attach when the receiver-first-call fits and break after
+      // `=` when it doesn't (never tearing the first call's args). Off for the trailing-lambda preamble
+      // path (its receiver call may legitimately wrap its args, e.g. `AesBytesEncryptor(…).run { }`).
+      flatIntroArgs: Boolean = false,
   ) {
     for ((index, part) in parts.withIndex()) {
       if (part.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
@@ -2553,17 +2561,32 @@ internal class KmpAstVisitor(
                 } else expressionBreakIndent
             val lambdaIndentElse = if (isTrailingLambda) expressionBreakNegativeIndent else ZERO
             val negLambdaIndentElse = if (isTrailingLambda) expressionBreakIndent else ZERO
-            visitCallElement(
-                callee = null,
-                typeArgumentList = selector.child(KtNodeTypes.TYPE_ARGUMENT_LIST),
-                argumentList = selector.child(KtNodeTypes.VALUE_ARGUMENT_LIST),
-                lambdaArguments = lambdaArguments,
-                argumentsIndent = Indent.If.make(nameTag, expressionBreakIndent, argsIndentElse),
-                lambdaIndent =
-                    if (midChainLambdaGrouped) expressionBreakNegativeIndent
-                    else Indent.If.make(nameTag, ZERO, lambdaIndentElse),
-                negativeLambdaIndent = Indent.If.make(nameTag, ZERO, negLambdaIndentElse),
-            )
+            fun emitCall() =
+                visitCallElement(
+                    callee = null,
+                    typeArgumentList = selector.child(KtNodeTypes.TYPE_ARGUMENT_LIST),
+                    argumentList = selector.child(KtNodeTypes.VALUE_ARGUMENT_LIST),
+                    lambdaArguments = lambdaArguments,
+                    argumentsIndent = Indent.If.make(nameTag, expressionBreakIndent, argsIndentElse),
+                    lambdaIndent =
+                        if (midChainLambdaGrouped) expressionBreakNegativeIndent
+                        else Indent.If.make(nameTag, ZERO, lambdaIndentElse),
+                    negativeLambdaIndent = Indent.If.make(nameTag, ZERO, negLambdaIndentElse),
+                )
+            // §7: hold the grouped receiver-through-first-call's own args flat (see [flatIntroArgs]) —
+            // only that call (shouldCloseGroup), only when a TAIL follows it (so the flat-fits decision
+            // arbitrates attach-vs-break; a sole call with no tail must wrap its args normally, §4), and
+            // only when it carries no trailing lambda (whose body can't flatten).
+            if (flatIntroArgs &&
+                groupingInfos[index].shouldCloseGroup &&
+                index < parts.size - 1 &&
+                lambdaArguments.isEmpty()) {
+              // flatIntroArgs is optofmt-only, so the sink is the native engine here.
+              val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
+              sink.appendFlatSubtree(sink.capture { emitCall() })
+            } else {
+              emitCall()
+            }
           }
         }
         KtNodeTypes.ARRAY_ACCESS_EXPRESSION -> {

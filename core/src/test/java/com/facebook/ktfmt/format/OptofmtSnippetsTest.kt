@@ -640,6 +640,29 @@ class AliasesTests {
       )
 
   /**
+   * §3/§7: when a chain RHS overflows the `=` line but its receiver-through-first-call *fits whole*,
+   * keep the receiver on the `=` line (do NOT break after `=`) and wrap each subsequent `.call` one
+   * per line. §7 forbids breaking after `=` to start the chain, so this attach-and-wrap form is
+   * preferred over the fewer-lines break-after-`=` form. Contrast [chain-forced-break-after-eq-stays-
+   * single-indent], where the receiver-first-call itself overflows and so must break after `=`.
+   * From kotlinconf-app AdaptiveDetailLayout.kt:44.
+   */
+  @Test
+  fun `chain-attaches-receiver-when-first-call-fits`() =
+      check(
+          input =
+              """fun g() {
+    val contentModifier = Modifier.verticalScroll(scrollState).padding(bottom = 24.dp).padding(bottomInsetPadding())
+}""",
+          expected =
+              """fun g() {
+    val contentModifier = Modifier.verticalScroll(scrollState)
+        .padding(bottom = 24.dp)
+        .padding(bottomInsetPadding())
+}""",
+      )
+
+  /**
    * §2/§6: a `+`-concatenation as a call argument forms a flat block — every operand at ONE shared
    * indent (one level below the call opener), never drifting a second level. And when the call is a
    * broken subsequent link of a chain (`…​.because("…" + "…")`), its argument list still indents one
@@ -881,6 +904,28 @@ fun AdaptiveDetailLayout(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 }""",
+      )
+
+  /**
+   * §9/§13: a typed lambda parameter (`{ cause: Throwable? -> … }`) keeps its type glued to the `:` —
+   * the type is never pushed onto its own line. When the header overflows, optofmt wraps earlier
+   * (breaks after `=`), never inside `cause: Throwable?`. Regression: the type split to a new line
+   * (`{ cause:\n    Throwable? ->`). From kotlinx.coroutines Deprecated.kt:53.
+   */
+  @Test
+  fun `typed-lambda-param-keeps-type-glued-to-colon`() =
+      check(
+          input =
+              """internal fun consumesAll(vararg channels: ReceiveChannel<*>): CompletionHandler = { cause: Throwable? ->
+    var exception: Throwable? = null
+    exception?.let { throw it }
+}""",
+          expected =
+              """internal fun consumesAll(vararg channels: ReceiveChannel<*>): CompletionHandler =
+    { cause: Throwable? ->
+        var exception: Throwable? = null
+        exception?.let { throw it }
+    }""",
       )
 
   @Test
