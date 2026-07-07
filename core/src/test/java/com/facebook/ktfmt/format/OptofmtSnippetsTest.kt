@@ -727,6 +727,30 @@ fun f() {
       )
 
   /**
+   * §9/§12: a type-use annotation is part of the type — it stays inline and glues to the parameter's
+   * `:`, never dropped onto its own line. Regression: `@Composable () -> Unit` split into three lines
+   * (`compactHeader:` / `@Composable` / `() -> Unit,`). From kotlinconf-app AdaptiveDetailLayout.kt:30.
+   */
+  @Test
+  fun `type-use-annotation-stays-inline-with-type`() =
+      check(
+          input =
+              """@Composable
+fun AdaptiveDetailLayout(
+    compactHeader: @Composable () -> Unit,
+    compactContentHeader: @Composable ColumnScope.() -> Unit,
+    onBack: () -> Unit,
+) {}""",
+          expected =
+              """@Composable
+fun AdaptiveDetailLayout(
+    compactHeader: @Composable () -> Unit,
+    compactContentHeader: @Composable ColumnScope.() -> Unit,
+    onBack: () -> Unit,
+) {}""",
+      )
+
+  /**
    * §12: an annotation that carries arguments goes on its OWN line above what it annotates — even on a
    * plain statement, not just a declaration. Here `@Suppress("…") while (…) {}` splits the annotation
    * onto its own line although the whole thing fits in 100 columns. From kotlinx.coroutines

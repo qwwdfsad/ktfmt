@@ -587,10 +587,16 @@ internal class KmpAstVisitor(
     // annotation, or any annotation on a regular property / function / class / `object` / accessor —
     // the annotation goes on its own line directly above the declaration. (ktfmt keeps all inline.)
     val isTypeParam = parentType == KtNodeTypes.TYPE_PARAMETER
+    // A type-USE annotation is part of the type itself (`compactHeader: @Composable () -> Unit`,
+    // `x: @Ann List<T>`), so it stays inline and glues to the type (§9/§12) — never dropped onto its
+    // own line, exactly like a type-parameter annotation.
+    val isTypeUse =
+        parentType == KtNodeTypes.TYPE_REFERENCE || parentType == KtNodeTypes.FUNCTION_TYPE
     val isValueParamOrConstructor =
         parentType == KtNodeTypes.VALUE_PARAMETER || parentType == KtNodeTypes.PRIMARY_CONSTRUCTOR
     fun annotationStaysInline(child: KmpNode): Boolean =
         isTypeParam ||
+            isTypeUse ||
             (isValueParamOrConstructor && child.child(KtNodeTypes.VALUE_ARGUMENT_LIST) == null)
     // All-or-nothing: once ANY annotation on the declaration must break, break EVERY annotation so an
     // argument-carrying one is never left glued to an inline one.
