@@ -2597,6 +2597,16 @@ internal class KmpAstVisitor(
           emit(part.meaningfulChildren().last().text.toString())
           builder.close()
         }
+        // §2/§7: a block-bodied chain RECEIVER (`object : X { … }.call()`) sits on the introducer
+        // line, but the enclosing chain wraps its subsequent `.call`s one indent in (the chain's own
+        // block). Emit that receiver at a compensating negative indent so its body lands ONE level
+        // below the introducer (not two) — the tail `.call`s still wrap at the chain's single indent.
+        KtNodeTypes.OBJECT_LITERAL ->
+            if (options.optofmt && index == 0 && parts.size > 1) {
+              block(expressionBreakNegativeIndent) { visit(part) }
+            } else {
+              visit(part)
+            }
         else -> visit(part)
       }
     }

@@ -663,6 +663,36 @@ class AliasesTests {
       )
 
   /**
+   * §2/§7: a block-bodied `object` expression used as a chain receiver (`object : X { … }.call()`)
+   * keeps its body ONE level below the introducer, not two — the enclosing chain wrap must not push
+   * the object body a second level deep. Regression: the body drifted to indent 12 (and `}` to 8).
+   * From kotlinx.coroutines DisabledHandlerTest.kt:18.
+   */
+  @Test
+  fun `object-expression-chain-receiver-body-indents-one-level`() =
+      check(
+          input =
+              """class C {
+    private val disabledDispatcher = object : Handler() {
+        override fun sendMessageAtTime(msg: Message?, uptimeMillis: Long): Boolean {
+            if (delegateToSuper) return super.sendMessageAtTime(msg, uptimeMillis)
+            return false
+        }
+    }.asCoroutineDispatcher()
+}""",
+          expected =
+              """class C {
+    private val disabledDispatcher = object : Handler() {
+        override fun sendMessageAtTime(msg: Message?, uptimeMillis: Long): Boolean {
+            if (delegateToSuper) return super.sendMessageAtTime(msg, uptimeMillis)
+            return false
+        }
+    }
+        .asCoroutineDispatcher()
+}""",
+      )
+
+  /**
    * §2/§6: a `+`-concatenation as a call argument forms a flat block — every operand at ONE shared
    * indent (one level below the call opener), never drifting a second level. And when the call is a
    * broken subsequent link of a chain (`…​.because("…" + "…")`), its argument list still indents one
