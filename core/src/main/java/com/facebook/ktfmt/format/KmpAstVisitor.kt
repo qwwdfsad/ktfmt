@@ -2252,10 +2252,13 @@ internal class KmpAstVisitor(
     if (hasParams || hasArrow) {
       builder.space()
       // optofmt §13: the parameters are never separated from `{` — no leading break before the first
-      // parameter (with the `->` glue below, the whole `{ params ->` header stays on one line; an
-      // overflowing header wraps earlier, §3/§7). ktfmt allows the leading break.
+      // parameter — NOR from one another: `breakable = false` keeps `p1, p2, p3` on one line (joined
+      // by ", ", no per-comma break points), so the whole `{ params ->` header stays intact. An
+      // overflowing header wraps earlier (the enclosing call's args, §3/§7), never inside the params.
+      // ktfmt allows both breaks.
       block(bracePlusExpressionIndent) {
-        visitEachCommaSeparated(valueParams, leadingBreak = !options.optofmt)
+        visitEachCommaSeparated(
+            valueParams, leadingBreak = !options.optofmt, breakable = !options.optofmt)
       }
       block(bracePlusBlockIndent) {
         if (paramList?.hasTrailingCommaAfter(valueParams.lastOrNull()) == true) {

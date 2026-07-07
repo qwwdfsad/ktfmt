@@ -827,6 +827,38 @@ fun f() {
 }""",
       )
 
+  /**
+   * §13: multiple lambda parameters are never split apart from one another. When a `{ p1, p2, p3 ->`
+   * header is too long, optofmt wraps the enclosing call's arguments instead — the params stay on one
+   * line. Regression: the params split one-per-line (`{ agenda,\n speakers,\n conferenceInfo ->`).
+   * From kotlinconf-app AboutConferenceViewModel.kt:34.
+   */
+  @Test
+  fun `lambda-params-stay-together-wrap-call-args-instead`() =
+      check(
+          input =
+              """class C {
+    val events: StateFlow<List<AboutConferenceEvent>> =
+        combine(service.agenda, service.speakers, service.conferenceInfo) { agenda, speakers, conferenceInfo ->
+            val speakersById = speakers.associateBy { it.id }
+            speakersById
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+}""",
+          expected =
+              """class C {
+    val events: StateFlow<List<AboutConferenceEvent>> = combine(
+            service.agenda,
+            service.speakers,
+            service.conferenceInfo,
+        ) { agenda, speakers, conferenceInfo ->
+            val speakersById = speakers.associateBy { it.id }
+            speakersById
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+}""",
+      )
+
   @Test
   fun `trailing-lambda`() =
       check(
