@@ -7,12 +7,12 @@
 {
 "id": "indent-economy",
 "input": "fun f() { add(OverrideQueue(queueSettings.waitTime, queueSettings.firstToSolveWaitTime, queueSettings.featuredRunWaitTime, queueSettings.inProgressRunWaitTime, queueSettings.maxQueueSize, queueSettings.maxUntestedRun)) }",
-"optofmt": "fun f() {\n    add(\n        OverrideQueue(\n            queueSettings.waitTime,\n            queueSettings.firstToSolveWaitTime,\n            queueSettings.featuredRunWaitTime,\n            queueSettings.inProgressRunWaitTime,\n            queueSettings.maxQueueSize,\n            queueSettings.maxUntestedRun,\n        )\n    )\n}\n"
+"optofmt": "fun f() {\n    add(OverrideQueue(\n        queueSettings.waitTime,\n        queueSettings.firstToSolveWaitTime,\n        queueSettings.featuredRunWaitTime,\n        queueSettings.inProgressRunWaitTime,\n        queueSettings.maxQueueSize,\n        queueSettings.maxUntestedRun,\n    ))\n}\n"
 },
 {
 "id": "indent-economy-extra-1",
 "input": null,
-"optofmt": "fun f() {\n    registerHandler(\n        buildHandler(\n            aLongUnbreakableArgumentIdentifierDeliberatelySizedToOverflowTheColumnLimitNoMatterWhatXY,\n        )\n    )\n}\n"
+"optofmt": "fun f() {\n    registerHandler(buildHandler(\n        aLongUnbreakableArgumentIdentifierDeliberatelySizedToOverflowTheColumnLimitNoMatterWhatXY,\n    ))\n}\n"
 },
 {
 "id": "indent-economy-extra-2",
@@ -22,7 +22,7 @@
 {
 "id": "indent-economy-extra-3",
 "input": null,
-"optofmt": "fun f() {\n    add(\n        queue = OverrideQueue(\n            queueSettings.waitTime,\n            queueSettings.firstToSolveWaitTime,\n            queueSettings.featuredRunWaitTime,\n            queueSettings.inProgressRunWaitTime,\n            queueSettings.maxQueueSize,\n            queueSettings.maxUntestedRun,\n        )\n    )\n}\n"
+"optofmt": "fun f() {\n    add(queue = OverrideQueue(\n        queueSettings.waitTime,\n        queueSettings.firstToSolveWaitTime,\n        queueSettings.featuredRunWaitTime,\n        queueSettings.inProgressRunWaitTime,\n        queueSettings.maxQueueSize,\n        queueSettings.maxUntestedRun,\n    ))\n}\n"
 },
 {
 "id": "indent-economy-extra-4",
