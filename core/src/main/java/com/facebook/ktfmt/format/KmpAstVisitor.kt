@@ -1035,12 +1035,19 @@ internal class KmpAstVisitor(
         val entries = children.filter { it.type == KtNodeTypes.ENUM_ENTRY }
         block(ZERO) {
           builder.breakOp(FillMode.UNIFIED, "", ZERO)
+          var isFirstEntry = true
           for (entry in entries) {
+            // optofmt §11: preserve an author blank line before an enum entry (e.g. one that
+            // precedes the entry's KDoc). Resolves against the source, so both passes agree.
+            if (options.optofmt && !isFirstEntry) {
+              builder.blankLineWanted(BlankLineWanted.PRESERVE)
+            }
             visitEnumEntry(entry)
             if (entry.meaningfulChildren().any { it.type == KtTokens.COMMA }) {
               emit(",")
               builder.forcedBreak()
             }
+            isFirstEntry = false
           }
         }
         builder.guessToken(";")

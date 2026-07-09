@@ -1513,4 +1513,35 @@ internal val pendingInitializationLambdas = IdentityHashMap<Entity<Any>, Mutable
         IdentityHashMap<Entity<Any>, MutableList<(Entity<Any>) -> Unit>>()
 }""",
       )
+
+  @Test
+  fun `enum-entries-preserve-author-blank-lines`() =
+      check(
+          input = """enum class PenaltyRoundingMode {
+  /** Round down. */
+  @SerialName("down")
+  EACH_SUBMISSION_DOWN_TO_MINUTE,
+
+  /** Round up. */
+  @SerialName("up")
+  EACH_SUBMISSION_UP_TO_MINUTE,
+
+  /** Sum down. */
+  @SerialName("sum")
+  SUM_DOWN_TO_MINUTE,
+}""",
+          expected = """enum class PenaltyRoundingMode {
+    /** Round down. */
+    @SerialName("down")
+    EACH_SUBMISSION_DOWN_TO_MINUTE,
+
+    /** Round up. */
+    @SerialName("up")
+    EACH_SUBMISSION_UP_TO_MINUTE,
+
+    /** Sum down. */
+    @SerialName("sum")
+    SUM_DOWN_TO_MINUTE,
+}""",
+      )
 }
