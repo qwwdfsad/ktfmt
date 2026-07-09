@@ -1544,4 +1544,35 @@ internal val pendingInitializationLambdas = IdentityHashMap<Entity<Any>, Mutable
     SUM_DOWN_TO_MINUTE,
 }""",
       )
+
+  /**
+   * §2/§7: a call with a property-run receiver (`context.generator.generateFile(…) { … }`) whose
+   * value arguments wrap is still the atomic receiver-through-first-call — the trailing lambda hangs
+   * ONE indent below the chain line, not two. The multi-call chain path used to wrap the whole chain
+   * in a continuation block, pushing the lambda body (and its `}`) an extra indent too deep.
+   */
+  @Test
+  fun `wrapping-call-on-property-run-receiver-trailing-lambda-body-single-indent`() =
+      check(
+          input =
+              """fun f() {
+    context.generator.generateFile(
+        dependencies = Dependencies(true, obj.containingFile),
+        packageName = "org.icpclive.clics.events",
+        fileName = obj.eventName
+    ) {
+        handle(obj)
+    }
+}""",
+          expected =
+              """fun f() {
+    context.generator.generateFile(
+        dependencies = Dependencies(true, obj.containingFile),
+        packageName = "org.icpclive.clics.events",
+        fileName = obj.eventName,
+    ) {
+        handle(obj)
+    }
+}""",
+      )
 }

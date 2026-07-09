@@ -2636,18 +2636,35 @@ internal class KmpAstVisitor(
     val baseIsBlockBodied =
         baseType == KtNodeTypes.OBJECT_LITERAL || baseType == KtNodeTypes.LAMBDA_EXPRESSION
 
-    // §7: when the trailing lambda call applies DIRECTLY to the receiver (`merge(args).collect { … }`,
-    // `Foo(a, b).apply { … }`, `foo.let { … }` — a two-part chain), offer ATTACH vs BROKEN and let §1
-    // pick by line count. The receiver (`head`) and the trailing `.call { … }` (`tail`) are captured
-    // separately, so each source token is consumed exactly once (capturing the same tokens twice would
-    // desync the comment/token cursor). A block-bodied base (`object … {}.also {}`) is not "on the
-    // line", so its `.call` correctly drops below the `}` — handled by the general path below.
-    if (options.optofmt && parts.size == 2 && !baseIsBlockBodied) {
-      val head = sink.capture { visit(parts[0]) }
+    // §7: when the trailing lambda call is the atomic receiver-through-first-call — the lambda applies
+    // DIRECTLY to the receiver (`merge(args).collect { … }`, `Foo(a, b).apply { … }`, `foo.let { … }`
+    // — a two-part chain), OR the receiver is a leading property run ending in the first call
+    // (`context.generator.generateFile(args) { … }` — every part grouped, no staircase) — offer ATTACH
+    // vs BROKEN and let §1 pick by line count. The receiver run (`head`) and the trailing `.call { … }`
+    // (`tail`) are captured separately, so each source token is consumed exactly once (capturing the
+    // same tokens twice would desync the comment/token cursor). Splitting here keeps the lambda body one
+    // indent below the chain line; the general multi-call path below wraps the whole chain in a
+    // continuation block, which would push a grouped-first-call lambda body one indent too deep. A
+    // block-bodied base (`object … {}.also {}`) is not "on the line", so its `.call` correctly drops
+    // below the `}` — handled by the general path below. Grouped intermediate parts are guaranteed
+    // non-call (a call only ever ends the grouped receiver-through-first-call prefix), so `head` needs
+    // no call/break handling.
+    if (options.optofmt &&
+        !baseIsBlockBodied &&
+        (parts.size == 2 ||
+            (parts.size > 2 && (1 until parts.size).all { groupingInfos[it].shouldCloseGroup }))) {
+      val head =
+          sink.capture {
+            visit(parts[0])
+            for (i in 1 until parts.size - 1) {
+              emit(parts[i].operationSignValue())
+              visit(parts[i].qualifiedSelector())
+            }
+          }
       val tail =
           sink.capture {
-            emit(parts[1].operationSignValue())
-            visit(parts[1].qualifiedSelector())
+            emit(parts.last().operationSignValue())
+            visit(parts.last().qualifiedSelector())
           }
       // ATTACH: the receiver wraps only its OWN arguments at a single indent (it is not wrapped in the
       // chain's continuation block), the trailing `.call {` concatenates onto its `)`
