@@ -2164,24 +2164,57 @@ internal class KmpAstVisitor(
     // optofmt §4 (last-item expansion): when the final argument is an unnamed lambda, keep the
     // leading arguments inline on the opener line and let the lambda expand in place, with the
     // closing `)` stacked against the lambda's `}` (`call(a, b, { x ->` … `})`). ktfmt instead
-    // explodes every argument. (Falling back to one-arg-per-line when the opener line itself
-    // overflows would require the global optimizer; here the opener is kept inline.)
+    // explodes every argument. That compact form is only legal while the opener line FITS; when the
+    // leading arguments overflow it, the call must fall back to one-argument-per-line (§4) instead of
+    // jamming everything onto one over-long line. So offer BOTH arrangements and let §1 (minimize
+    // overflow) choose: `hang` (leading inline + lambda hanging) when the opener fits, `split`
+    // (every argument on its own line, §14 trailing comma) when it doesn't. Each argument (and the
+    // `)`) is captured ONCE and reused in both candidates, so the source-token cursor advances only
+    // once (mirrors the supertype-list arrangement in [visitClassOrObject]).
     if (options.optofmt && isLastArgUnnamedLambda(arguments)) {
+      val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
       emit("(")
       val leading = arguments.dropLast(1)
-      leading.forEachIndexed { i, arg ->
-        if (i != 0) {
-          emit(",")
-          builder.space()
-        }
-        visitArgument(arg)
-      }
-      emit(",")
-      builder.space()
-      // wrapInBlock = false so the lambda body sits at one indent (like a hugging trailing lambda),
-      // not two.
-      visitArgumentInternal(arguments.last(), wrapInBlock = false, brokeBeforeBrace = null)
-      emit(")")
+      val leadingDocs = leading.map { arg -> sink.capture { visitArgument(arg) } }
+      // wrapInBlock = false so, when hung, the lambda body sits at one indent (like a hugging
+      // trailing lambda), not two; the lambda's own indent is ZERO so this is layout-equivalent to a
+      // plain `visitArgument` in the split arrangement.
+      val lambdaDoc =
+          sink.capture {
+            visitArgumentInternal(arguments.last(), wrapInBlock = false, brokeBeforeBrace = null)
+          }
+      // Capturing `)` consumes the source token (skipping any dropped trailing comma) exactly once;
+      // the resulting subtree is reused in both candidates.
+      val closeDoc = sink.capture { emit(")") }
+      val hang =
+          sink.capture {
+            leadingDocs.forEach { doc ->
+              sink.appendSubtree(doc)
+              sink.literal(",")
+              sink.space()
+            }
+            sink.appendSubtree(lambdaDoc)
+            sink.appendSubtree(closeDoc)
+          }
+      val split =
+          sink.capture {
+            block(expressionBreakIndent) {
+              leadingDocs.forEach { doc ->
+                sink.forcedBreak(ZERO)
+                sink.appendSubtree(doc)
+                sink.literal(",")
+              }
+              sink.forcedBreak(ZERO)
+              sink.appendSubtree(lambdaDoc)
+              sink.literal(",") // §14 trailing comma
+            }
+            // The leading `block(expressionBreakIndent)` above supplied the args' one indent level;
+            // `hugLastLambda` set this call's own argument indent to ZERO, so the closing `)` returns
+            // to the base (statement) level with a plain ZERO break.
+            sink.forcedBreak(ZERO)
+            sink.appendSubtree(closeDoc)
+          }
+      sink.emitAlt(listOf(hang, split))
       return null
     }
     // Parens are "empty" only if there is nothing — not even a comment — between them.

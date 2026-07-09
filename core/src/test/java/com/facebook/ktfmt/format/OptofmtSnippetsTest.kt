@@ -726,6 +726,42 @@ object Algorithms {
       )
 
   /**
+   * §4: last-item expansion (keep the LEADING args inline on the opener line and hang the trailing
+   * lambda) applies only when the opener line actually FITS. When the leading arguments overflow it,
+   * the call must fall back to one-argument-per-line (the lambda included) — NOT keep every leading
+   * arg jammed onto a single over-long opener line. §1 (minimize overflow) picks between the two.
+   */
+  @Test
+  fun `call-with-overflowing-leading-args-and-trailing-lambda-splits-one-per-line`() =
+      check(
+          input =
+              """fun x() {
+    configureDefaultConfigRouting(ServerCommand.cdsOptions.configDirectory.resolve("settings.json"), ServerCommand.cdsOptions.advancedJsonPath, ServerCommand.cdsOptions.visualConfigFile, ServerCommand.cdsOptions.customFieldsCsvPath, ServerCommand.cdsOptions.orgCustomFieldsCsvPath, {
+        val principal = principal<ConverterAdminPrincipal>()
+        if (principal?.confirmed == true) { adminContestInfoFlow } else { nonAdminContestInfoFlow }
+    })
+}""",
+          expected =
+              """fun x() {
+    configureDefaultConfigRouting(
+        ServerCommand.cdsOptions.configDirectory.resolve("settings.json"),
+        ServerCommand.cdsOptions.advancedJsonPath,
+        ServerCommand.cdsOptions.visualConfigFile,
+        ServerCommand.cdsOptions.customFieldsCsvPath,
+        ServerCommand.cdsOptions.orgCustomFieldsCsvPath,
+        {
+            val principal = principal<ConverterAdminPrincipal>()
+            if (principal?.confirmed == true) {
+                adminContestInfoFlow
+            } else {
+                nonAdminContestInfoFlow
+            }
+        },
+    )
+}""",
+      )
+
+  /**
    * §1/§7: when the receiver-through-first-call is too long to attach to the `=` line, §1 (minimize
    * overflow) forces the break after `=`; the chain then sits at a SINGLE indent — receiver and every
    * subsequent `.call` all one level below the `val` line, never a second level (§7 "do not add a
