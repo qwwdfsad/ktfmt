@@ -2771,9 +2771,15 @@ internal class KmpAstVisitor(
     for ((index, part) in parts.withIndex()) {
       if (part.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
           part.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) {
-        // Tail `.call` after a grouped multiline lambda attaches to `}` via a fill break — BUT only
-        // when it is itself a simple, lambda-free call (`}.join()`). A tail call carrying its OWN
-        // trailing lambda is a full §7 `.call` and stays UNIFIED (its own line).
+        // Tail `.call` after a grouped multiline lambda attaches to `}` via a fill break — a
+        // lambda-free call (`}.join()`), OR the SOLE trailing-lambda tail applied directly to the
+        // receiver-through-first-call (`v.mapValues { … }.filterValues { it !is JsonNull }` —
+        // §7's "a sole trailing-lambda call applied directly to the receiver stays attached"). A tail
+        // call that carries its own lambda AND is preceded by an INTERMEDIATE `.call` (a genuine
+        // multi-call chain, `applyIf(a) { }.applyIf(b) { }.applyIf(c) { }`) is a full §7 `.call` and
+        // stays UNIFIED (its own line), so the chain does not pack several lambda calls per line.
+        val soleTrailingLambdaTail =
+            index == parts.size - 1 && index == groupedLambdaEnd + 1 && partHasTrailingLambda(part)
         if (options.optofmt && index in 1..receiverFirstCallEnd) {
           // §7: no break inside the receiver-through-first-call unit — the `.call` name concatenates
           // directly onto the receiver (`OverrideOrganizations` + `.Override`).
@@ -2783,7 +2789,9 @@ internal class KmpAstVisitor(
           // when this preamble is laid out flat inside an [NFlat] hang candidate — see
           // [emitChainWithHangableTrailingLambda].
           (builder as com.facebook.ktfmt.format.layout.NativeSink).forcedChainStructuralBreak(ZERO)
-        } else if (index > groupedLambdaEnd && groupedLambdaEnd >= 0 && !partHasTrailingLambda(part)) {
+        } else if (index > groupedLambdaEnd &&
+            groupedLambdaEnd >= 0 &&
+            (!partHasTrailingLambda(part) || soleTrailingLambdaTail)) {
           builder.breakOp(FillMode.INDEPENDENT, "", ZERO)
         } else {
           builder.breakOp(FillMode.UNIFIED, "", ZERO, Optional.of(nameTag))

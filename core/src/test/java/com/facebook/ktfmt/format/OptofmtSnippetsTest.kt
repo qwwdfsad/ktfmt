@@ -1575,4 +1575,28 @@ internal val pendingInitializationLambdas = IdentityHashMap<Entity<Any>, Mutable
     }
 }""",
       )
+
+  /**
+   * §7: a SOLE trailing-lambda tail applied directly to the receiver-through-first-call (whose own
+   * first call carries a multiline lambda) stays ATTACHED to the `}` (`}.filterValues { … }`) when it
+   * fits — it is not dropped onto its own line. Only a genuine multi-call chain (an intermediate
+   * `.call` precedes the trailing lambda) puts each subsequent call on its own line (see
+   * `call-chain-of-trailing-lambdas`).
+   */
+  @Test
+  fun `sole-trailing-lambda-tail-after-grouped-lambda-call-attaches`() =
+      check(
+          input =
+              """fun f() {
+    val filteredRules = v.mapValues { (_, value) ->
+        if (value is JsonObject) JsonObject(value) else value
+    }.filterValues { it !is JsonNull }
+}""",
+          expected =
+              """fun f() {
+    val filteredRules = v.mapValues { (_, value) ->
+        if (value is JsonObject) JsonObject(value) else value
+    }.filterValues { it !is JsonNull }
+}""",
+      )
 }
