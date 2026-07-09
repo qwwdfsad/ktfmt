@@ -85,15 +85,17 @@ class OptofmtCorpusGateTest {
 
   private companion object {
     /**
-     * Corpus entries optofmt does NOT yet match. The first two are genuine optofmt gaps (a sub-level
+     * Corpus entries optofmt does NOT match. `block-rhs-extra-6` is a genuine optofmt gap (a sub-level
      * "fits" while its containing line overflows, so §1 wrongly avoids wrapping it — the same class the
-     * chain re-architecture solved, pending the same treatment for these constructs). The last is a
+     * chain re-architecture solved, pending the same treatment for that construct). The last is a
      * buggy-expected example: RULES §6 does not specify `as`-cast wrap direction, so the corpus's
      * break-before-`as` is not derivable from the rules (flag for snippets.py, per "rules win").
+     * (`infix-attached-extra-1` used to be here — its corpus value broke after the infix `to`, the §3
+     * anti-pattern; snippets.py was corrected to the rules-correct break-after-`=` and optofmt now
+     * matches it — see OptofmtSnippetsTest.`infix-attached-breaks-after-eq-when-unit-too-long`.)
      */
     val KNOWN_DIVERGENCES =
         setOf(
-            "infix-attached-extra-1", // §3/§6 long infix RHS mis-wrapped as a call chain — TODO
             "block-rhs-extra-6", // §3 `= when (long subject) {` breaks after `=` — TODO
             "supertype-by-delegation-attached", // buggy-expected: `as`-wrap direction not in RULES
         )

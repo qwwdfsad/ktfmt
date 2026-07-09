@@ -95,6 +95,31 @@ class OptofmtSnippetsTest {
       )
 
   /**
+   * §3/§7: infix `to` stays attached to its RHS opener even when the whole
+   * `orgInfo.id to OverrideOrganizations.Override(` unit is too long to sit on the `=` line. Two
+   * introducers compete: keeping `= orgInfo.id to OverrideOrganizations.Override(` on the header
+   * overflows (~110 cols), so the outer `=` breaks and drops the whole infix unit below at one indent
+   * (§7 "unit too long → break after the introducer"). It must NOT break after `to`
+   * (`= orgInfo.id to\n    Override(` — the §3 anti-pattern), nor treat the sole call
+   * `OverrideOrganizations.Override(…)` as a splittable chain (`…Organizations\n.Override(` — a
+   * receiver-through-first-call is atomic, §7). Regression: optofmt used to split the receiver from
+   * its `.Override` call to save a line.
+   */
+  @Test
+  fun `infix-attached-breaks-after-eq-when-unit-too-long`() =
+      check(
+          input =
+              """val pair: Pair<OrganizationId, OverrideOrganizations.Override> = orgInfo.id to OverrideOrganizations
+    .Override(fullName = substituteRaw(fullName), displayName = substituteRaw(displayName))""",
+          expected =
+              """val pair: Pair<OrganizationId, OverrideOrganizations.Override> =
+    orgInfo.id to OverrideOrganizations.Override(
+        fullName = substituteRaw(fullName),
+        displayName = substituteRaw(displayName),
+    )""",
+      )
+
+  /**
    * §3: the supertype `:` is an introducer — it stays attached to the FIRST supertype even when the
    * primary-constructor parameter list above it wrapped. The remaining supertypes then go one-per-line
    * (§4). Regression: optofmt used to break after `:` (`) :\n    AbstractCoroutine(…)`).

@@ -37,7 +37,7 @@
 {
 "id": "infix-attached-extra-1",
 "input": null,
-"optofmt": "val pair: Pair<OrganizationId, OverrideOrganizations.Override> = orgInfo.id to\n    OverrideOrganizations.Override(\n        fullName = substituteRaw(fullName),\n        displayName = substituteRaw(displayName)\n    )"
+"optofmt": "val pair: Pair<OrganizationId, OverrideOrganizations.Override> =\n    orgInfo.id to OverrideOrganizations.Override(\n        fullName = substituteRaw(fullName),\n        displayName = substituteRaw(displayName),\n    )"
 },
 {
 "id": "supertype-attached",

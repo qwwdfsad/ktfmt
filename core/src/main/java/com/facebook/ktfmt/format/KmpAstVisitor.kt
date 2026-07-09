@@ -2514,13 +2514,39 @@ internal class KmpAstVisitor(
       // path (its receiver call may legitimately wrap its args, e.g. `AesBytesEncryptor(…).run { }`).
       flatIntroArgs: Boolean = false,
   ) {
+    // optofmt §7: the receiver through its first call is ATOMIC — it never breaks internally
+    // (`OverrideOrganizations.Override(…)`, `DMLTestsData.Users.id.count()`). The grouped leading run
+    // is the contiguous `shouldCloseGroup` prefix starting at index 1 (grouping only opens at index 0,
+    // so those parts are contiguous). Its parts' leading breaks are suppressed entirely: a firing
+    // break here would let the global optimizer split the unit to save a line (e.g. `…Organizations`
+    // ⏎ `.Override(flat args)`), which §1's line-count would prefer but §7 forbids. When the whole
+    // unit does not fit, the chain instead wraps as a whole after the introducer (§3) or overflows if
+    // unbreakable — never splitting the receiver from its first call.
+    // Only for a line-shaped base receiver (a name/`this`/parenthesized expr). A block-bodied
+    // receiver (`object : Handler() { … }.asCoroutineDispatcher()`, a multiline lambda) is not "on the
+    // introducer's line", so its first `.call` correctly drops below the closing `}` — leave those to
+    // the normal break path.
+    val baseType = parts.firstOrNull()?.type
+    val baseIsBlockBodied =
+        baseType == KtNodeTypes.OBJECT_LITERAL || baseType == KtNodeTypes.LAMBDA_EXPRESSION
+    var receiverFirstCallEnd = 0
+    if (options.optofmt && !baseIsBlockBodied) {
+      var k = 1
+      while (k < parts.size && groupingInfos[k].shouldCloseGroup) {
+        receiverFirstCallEnd = k
+        k++
+      }
+    }
     for ((index, part) in parts.withIndex()) {
       if (part.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
           part.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) {
         // Tail `.call` after a grouped multiline lambda attaches to `}` via a fill break — BUT only
         // when it is itself a simple, lambda-free call (`}.join()`). A tail call carrying its OWN
         // trailing lambda is a full §7 `.call` and stays UNIFIED (its own line).
-        if (forceBreaks && !groupingInfos[index].shouldCloseGroup) {
+        if (options.optofmt && index in 1..receiverFirstCallEnd) {
+          // §7: no break inside the receiver-through-first-call unit — the `.call` name concatenates
+          // directly onto the receiver (`OverrideOrganizations` + `.Override`).
+        } else if (forceBreaks && !groupingInfos[index].shouldCloseGroup) {
           // §7: force every subsequent `.call` onto its own line (the receiver-through-first-call
           // stays grouped, so its break is not forced). Marked chain-structural so it is suppressed
           // when this preamble is laid out flat inside an [NFlat] hang candidate — see
