@@ -214,13 +214,13 @@ runsByTeamId.applyEvent(state)
 }""")
 
   /**
-   * §2/§3: a non-block `if`/`else` expression body attaches its `= if (cond) then` to the
-   * declaration line (§3), but the wrapped `else` clause is a continuation and must sit one indent
-   * level deeper — never at the owner's column (which for a top-level declaration would leave a bare
-   * `else` at column 0). From ktor Authorization.withOAuth.
+   * §15 (with §3/§4): a non-block `if`/`else` value keeps each branch body ATTACHED to its keyword.
+   * `= if (cond) this` attaches per §3; the `else` clause hangs on its own line but keeps its call
+   * opener `else withHeader(` attached and wraps the call's arguments (§4) — it does not leave a
+   * bare `else` with the body pushed onto a further-indented line. From ktor Authorization.withOAuth.
    */
   @Test
-  fun `non-block-if-else-expression-body-indents-else-continuation`() =
+  fun `non-block-if-else-expression-body-attaches-branch-bodies`() =
       check(
           input =
               "public fun Authorization.withOAuth(token: Credential?): Authorization = " +
@@ -229,14 +229,13 @@ runsByTeamId.applyEvent(state)
                   "value = \"OAuth \${token.value}\"))",
           expected =
               """public fun Authorization.withOAuth(token: Credential?): Authorization = if (token == null) this
-    else
-        withHeader(
-            name = HttpHeaders.Authorization,
-            value = Credential(
-                displayValue = "OAuth ${'$'}{token.displayValue}",
-                value = "OAuth ${'$'}{token.value}",
-            ),
-        )""",
+    else withHeader(
+        name = HttpHeaders.Authorization,
+        value = Credential(
+            displayValue = "OAuth ${'$'}{token.displayValue}",
+            value = "OAuth ${'$'}{token.value}",
+        ),
+    )""",
       )
 
   /** §2/§3: the common shape — only the `else` clause wraps, staying one indent below the header. */

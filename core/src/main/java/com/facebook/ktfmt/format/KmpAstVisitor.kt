@@ -1138,13 +1138,19 @@ internal class KmpAstVisitor(
 
   private fun visitIfExpression(node: KmpNode) {
     sync(node)
+    val thenBody = node.child(KtNodeTypes.THEN)?.meaningfulChildren()?.firstOrNull()
+    val hasElse = node.keywordText("else") != null
+    val elseBody = node.child(KtNodeTypes.ELSE)?.meaningfulChildren()?.firstOrNull()
+    val thenIsBlock = thenBody?.type == KtNodeTypes.BLOCK
+    val elseIsBlockLike = elseBody?.type == KtNodeTypes.BLOCK || elseBody?.type == KtNodeTypes.IF
     block(ZERO) {
       emitKeywordWithCondition("if", node.child(KtNodeTypes.CONDITION))
 
-      val thenBody = node.child(KtNodeTypes.THEN)?.meaningfulChildren()?.firstOrNull()
-      if (thenBody?.type == KtNodeTypes.BLOCK) {
+      if (thenIsBlock) {
         builder.space()
         block(ZERO) { visit(thenBody) }
+      } else if (options.optofmt) {
+        emitAttachedBranchBody(thenBody)
       } else {
         builder.breakOp(FillMode.INDEPENDENT, " ", expressionBreakIndent)
         block(expressionBreakIndent) {
@@ -1153,15 +1159,15 @@ internal class KmpAstVisitor(
         }
       }
 
-      if (node.keywordText("else") != null) {
-        if (thenBody?.type == KtNodeTypes.BLOCK) builder.space()
-        else builder.breakOp(FillMode.UNIFIED, " ", ZERO)
+      if (hasElse) {
+        if (thenIsBlock) builder.space() else builder.breakOp(FillMode.UNIFIED, " ", ZERO)
         block(ZERO) {
           emit("else")
-          val elseBody = node.child(KtNodeTypes.ELSE)?.meaningfulChildren()?.firstOrNull()
-          if (elseBody?.type == KtNodeTypes.BLOCK || elseBody?.type == KtNodeTypes.IF) {
+          if (elseIsBlockLike) {
             builder.space()
             block(ZERO) { visit(elseBody) }
+          } else if (options.optofmt) {
+            emitAttachedBranchBody(elseBody)
           } else {
             builder.breakOp(FillMode.INDEPENDENT, " ", expressionBreakIndent)
             block(expressionBreakIndent) { visit(elseBody) }
@@ -1169,6 +1175,29 @@ internal class KmpAstVisitor(
         }
       }
     }
+  }
+
+  /**
+   * §15 (with §3/§4): emit a non-block `if`/`else` branch body attached to its keyword — `if (c) x`,
+   * `else y` — and let the body wrap its OWN contents (a call's arguments, etc.) rather than pushing
+   * the whole body onto a fresh indented line and leaving a bare `if (c)` / `else`. We offer §1 two
+   * candidates and let it choose: the body attached (`space + body`, the default — fewest lines,
+   * matches how an `else if` chain and a `= call(…)` RHS already lay out), or, only when attaching
+   * cannot avoid an overflow the body cannot absorb, the body broken onto its own line one indent
+   * deeper. Mirrors the `when`-entry `->` introducer (see [visitWhenExpression]).
+   */
+  private fun emitAttachedBranchBody(body: KmpNode?) {
+    val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
+    val rhs = sink.capture { visit(body) }
+    val attached = sink.capture {
+      sink.space()
+      sink.appendSubtree(rhs)
+    }
+    val broken = sink.capture {
+      sink.forcedBreak(expressionBreakIndent)
+      sink.appendSubtree(rhs)
+    }
+    sink.emitAlt(listOf(attached, broken))
   }
 
   private fun visitWhenExpression(node: KmpNode) {

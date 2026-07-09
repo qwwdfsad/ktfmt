@@ -124,4 +124,93 @@ class NativeEngineTest {
             """
                 .trimMargin() + "\n")
   }
+
+  /**
+   * §15: a genuine two-branch value `if`/`else` that fits stays entirely on one line — the branches
+   * are never split just because one of them is a call.
+   */
+  @Test
+  fun twoBranchIfExpressionThatFitsStaysInline() {
+    assertThat(fmt("fun f() { val x = if (c) a else b }"))
+        .isEqualTo(
+            """
+            |fun f() {
+            |    val x = if (c) a else b
+            |}
+            """
+                .trimMargin() + "\n")
+  }
+
+  /**
+   * §15 (with §3/§4): when a two-branch value `if`/`else` must wrap, each branch body stays ATTACHED
+   * to its keyword and wraps its OWN contents — the short `then` value rides the `if` line, and the
+   * `else` call keeps its opener on the `else` line and wraps its arguments one-per-line (§4). We
+   * never push a body onto a fresh indented line leaving a bare `if (c)` / `else`. This is the
+   * reported diff's shape.
+   */
+  @Test
+  fun twoBranchIfExpressionAttachesBodiesAndWrapsElseContents() {
+    assertThat(
+            fmt(
+                "fun f() {\nif (cond) shortThenValue else buildResultObject(firstArgumentHere, " +
+                    "secondArgumentHere, thirdArgumentHere, fourthArgumentHere, fifthArgument)\n}"))
+        .isEqualTo(
+            """
+            |fun f() {
+            |    if (cond) shortThenValue
+            |    else buildResultObject(
+            |        firstArgumentHere,
+            |        secondArgumentHere,
+            |        thirdArgumentHere,
+            |        fourthArgumentHere,
+            |        fifthArgument,
+            |    )
+            |}
+            """
+                .trimMargin() + "\n")
+  }
+
+  /**
+   * §15 fallback: a branch body that can neither attach (it would overflow) nor wrap its own
+   * contents (it is a plain reference, not a call) breaks onto its own line one indent deeper — so
+   * `if (c) short` stays attached while the unwrappable `else` value drops down. Both bodies still
+   * hug their keyword whenever they can; only the one that cannot moves.
+   */
+  @Test
+  fun twoBranchIfExpressionBreaksOnlyTheUnwrappableBody() {
+    assertThat(
+            fmt(
+                "fun f() { val x = if (someCondition) shortValue else " +
+                    "someVeryLongUnwrappableElseValueThatDefinitelyExceedsTheColumnLimitForSureReallyTrulyYes }"))
+        .isEqualTo(
+            """
+            |fun f() {
+            |    val x = if (someCondition) shortValue
+            |        else
+            |            someVeryLongUnwrappableElseValueThatDefinitelyExceedsTheColumnLimitForSureReallyTrulyYes
+            |}
+            """
+                .trimMargin() + "\n")
+  }
+
+  /**
+   * §15 scope: an `else if` chain is NOT a two-branch value `if` — each `if (c) v` clause stays
+   * compact and only the `else` boundaries wrap, per §1 (breaking every branch would be worse).
+   */
+  @Test
+  fun elseIfChainKeepsClausesCompact() {
+    assertThat(
+            fmt(
+                "fun f() { val x = if (firstConditionHere) firstValue else if (secondConditionHere) " +
+                    "secondValue else theFallbackValueThatIsQuiteLongIndeedYesVeryMuchSoReally }"))
+        .isEqualTo(
+            """
+            |fun f() {
+            |    val x = if (firstConditionHere) firstValue
+            |        else if (secondConditionHere) secondValue
+            |        else theFallbackValueThatIsQuiteLongIndeedYesVeryMuchSoReally
+            |}
+            """
+                .trimMargin() + "\n")
+  }
 }
