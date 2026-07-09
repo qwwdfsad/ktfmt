@@ -2445,6 +2445,21 @@ internal class KmpAstVisitor(
     var shouldCloseGroup = false
   }
 
+  /**
+   * True when the source has a line break between the chain's receiver (`parts[0]`) and its first
+   * `.member` — i.e. the author already wrote the receiver on its own line (`this` ⏎ `.foo()`). The
+   * region between the receiver's end and the first selector's start spans the `.` and any surrounding
+   * whitespace, so a `\n` anywhere in it means the author broke the receiver off. Used to preserve that
+   * choice for any member-access chain (see [emitQualifiedExpression]).
+   */
+  private fun sourceBreaksAfterChainReceiver(parts: List<KmpNode>): Boolean {
+    if (parts.size < 2) return false
+    val receiverEnd = parts[0].endOffset
+    val firstSelStart = parts[1].qualifiedSelector()?.startOffset ?: return false
+    if (receiverEnd < 0 || receiverEnd >= firstSelStart || firstSelStart > code.length) return false
+    return code.substring(receiverEnd, firstSelStart).contains('\n')
+  }
+
   /** A `.call { … }` whose selector carries a trailing lambda. */
   private fun partHasTrailingLambda(part: KmpNode): Boolean =
       part.qualifiedSelector()?.let { sel ->
@@ -2469,7 +2484,26 @@ internal class KmpAstVisitor(
     // The gjf (non-optofmt) path keeps its block-like trailing lambda; optofmt non-sole-lambda chains
     // never hang (each `.call` on its own line, §7).
     val useBlockLikeLambdaStyle = soleTrailingLambda && !options.optofmt
-    val groupingInfos = computeGroupingInfo(parts, useBlockLikeLambdaStyle)
+    // optofmt §7: the receiver-through-first-call normally stays attached to the introducer line
+    // (`this.foo()` ⏎ `.bar()` ⏎ `.foobar()`). But when the AUTHOR wrote the receiver on its own line —
+    // a newline before the first `.call` — preserve that: the receiver sits alone and EVERY `.call`,
+    // including the first, goes on its own line at one indent (`this` ⏎ `.foo()` ⏎ `.bar()` ⏎ …). Both
+    // forms are legal; the choice is re-read from the source each pass, so it is idempotent (and a chain
+    // short enough to fit still collapses to one line either way). Suppressing the grouping makes each
+    // `.call` take a UNIFIED break that fires when the chain wraps.
+    // Only for a genuine staircase — at least TWO member-access links (`.foo().bar()`). A single-call
+    // chain (`OverrideOrganizations.Override(…)`, one link) is an atomic receiver-through-first-call
+    // that must NOT be split, even if the source wrapped it (`Receiver` ⏎ `.method(…)`).
+    val chainLinkCount =
+        parts.count {
+          it.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
+              it.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION
+        }
+    val breakReceiverOff =
+        options.optofmt && chainLinkCount >= 2 && sourceBreaksAfterChainReceiver(parts)
+    val groupingInfos =
+        computeGroupingInfo(
+            parts, useBlockLikeLambdaStyle, suppressReceiverGrouping = breakReceiverOff)
     // optofmt §1/§7: a trailing lambda on a call that stays grouped on the receiver's intro line
     // (`recv.first(x) { … }.tail()`) forces the whole chain multiline via the lambda's own body
     // breaks — even though the chain itself is not "too long for one line". Its trailing `.calls`
@@ -2770,6 +2804,11 @@ internal class KmpAstVisitor(
   private fun computeGroupingInfo(
       parts: List<KmpNode>,
       useBlockLikeLambdaStyle: Boolean,
+      // optofmt §7: when true, no `.call` groups with its receiver — the receiver-through-first-call
+      // stays on its own break so every call (incl. the first) lands on its own line. Used for a
+      // chain where every call carries a trailing lambda (see [emitQualifiedExpression]). Array-access
+      // and postfix (`!!`) grouping still applies.
+      suppressReceiverGrouping: Boolean = false,
   ): List<GroupingInfo> {
     val groupingInfos = List(parts.size) { GroupingInfo() }
     var lastIndexToOpen = 0
@@ -2786,6 +2825,7 @@ internal class KmpAstVisitor(
               else receiver
           val current = part.qualifiedSelector()
           if (lastIndexToOpen == 0 &&
+              !suppressReceiverGrouping &&
               current != null &&
               previous != null &&
               shouldGroupPartWithPrevious(parts, part, index, previous, current)) {
@@ -2937,9 +2977,18 @@ internal class KmpAstVisitor(
     }
 
     if (breakAfterLastElement) {
-      // §14: on the optofmt path, the closing break (taken exactly when the list wraps) carries a
-      // trailing comma, so a multi-line list ends with `item,` and a single-line one does not.
-      if (options.optofmt && trailingCommaWhenBroken && list.isNotEmpty()) {
+      // §8/§14: a source trailing `// note` on the last item stays inline on its line (`item, // note`)
+      // instead of being pushed onto its own line before the `)`. The dropped source comma prevents the
+      // usual trailing-comment flush from reaching it, so handle it explicitly; when it fires, the §14
+      // comma is already emitted, so close with a plain forced break.
+      if (options.optofmt &&
+          list.isNotEmpty() &&
+          (builder as com.facebook.ktfmt.format.layout.NativeSink)
+              .emitDroppedTrailingCommaComment(withComma = trailingCommaWhenBroken)) {
+        builder.breakOp(FillMode.FORCED, "", expressionBreakNegativeIndent, Optional.empty())
+      } else if (options.optofmt && trailingCommaWhenBroken && list.isNotEmpty()) {
+        // §14: on the optofmt path, the closing break (taken exactly when the list wraps) carries a
+        // trailing comma, so a multi-line list ends with `item,` and a single-line one does not.
         (builder as com.facebook.ktfmt.format.layout.NativeSink)
             .brokenPrefixBreak(breakType, expressionBreakNegativeIndent, ",")
       } else {

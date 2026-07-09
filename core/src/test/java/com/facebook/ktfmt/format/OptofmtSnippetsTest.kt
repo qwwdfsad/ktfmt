@@ -285,13 +285,15 @@ class AbstractCoroutineTest {
       )
 
   /**
-   * §7: in a member-access chain, each subsequent `.call` sits on its own line — never filled
-   * several per line — even when every call carries its own trailing lambda. Regression: the
-   * grouped-lambda tail-attach path (for `}.join()`-style lambda-free tails) was filling these
-   * lambda-bearing `.applyIf(…) { … }` calls, packing multiple per line and overflowing.
+   * §7: in a member-access chain, the receiver-break is author-preserving — both the default
+   * (receiver-through-first-call attached) and the receiver-on-its-own-line forms are legal. Here the
+   * source keeps the receiver and its first call together on one line, so the default attachment is
+   * applied: `return this.applyIf(…) { … }` stays on the introducer line and each subsequent `.call`
+   * wraps one per line. (The trailing lambdas are incidental — the same holds for plain calls, see
+   * [chain-receiver-attached-vs-broken-is-author-preserving].)
    */
   @Test
-  fun `call-chain-of-trailing-lambdas`() =
+  fun `call-chain-of-trailing-lambdas-attached`() =
       check(
           input =
               """
@@ -319,6 +321,78 @@ public fun Flow<ContestUpdate>.addComputedData(configure: ComputedDataConfig.() 
         .applyIf(config.autoFinalize) { autoFinalize() }
 }""",
       )
+
+  /**
+   * §7 companion: when the SAME all-trailing-lambda chain is written in the source with the receiver
+   * already broken onto its own line (`return this` ⏎ `.applyIf(…)`), optofmt PRESERVES that — the
+   * receiver stays alone on the introducer line and EVERY `.call { … }`, including the first, sits on
+   * its own line at one indent. Idempotent with the attached variant's output kept apart.
+   */
+  @Test
+  fun `call-chain-of-trailing-lambdas-receiver-broken-off-is-preserved`() =
+      check(
+          input =
+              """
+public fun Flow<ContestUpdate>.addComputedData(configure: ComputedDataConfig.() -> Unit = {}): Flow<ContestUpdate> {
+    val config = ComputedDataConfig().apply(configure)
+    return this
+        .applyIf(config.autoCreateMissingGroups) { autoCreateMissingGroupsAndOrgs() }
+        .applyIf(!config.submissionResultsAfterFreeze) { removeFrozenSubmissionsResults() }
+        .applyIf(!config.submissionsAfterEnd) { removeAfterEndSubmissions() }
+        .applyIf(config.autoFinalize) { autoFinalize() }
+}""",
+          expected =
+              """public fun Flow<ContestUpdate>.addComputedData(
+    configure: ComputedDataConfig.() -> Unit = {},
+): Flow<ContestUpdate> {
+    val config = ComputedDataConfig().apply(configure)
+    return this
+        .applyIf(config.autoCreateMissingGroups) { autoCreateMissingGroupsAndOrgs() }
+        .applyIf(!config.submissionResultsAfterFreeze) { removeFrozenSubmissionsResults() }
+        .applyIf(!config.submissionsAfterEnd) { removeAfterEndSubmissions() }
+        .applyIf(config.autoFinalize) { autoFinalize() }
+}""",
+      )
+
+  /**
+   * §7: the receiver-break choice is author-preserving for ANY member-access chain (≥2 links), not
+   * just chains with trailing lambdas. The default keeps the receiver through its first call attached
+   * (`recv.first(…)` then a staircase); if the author broke the receiver onto its own line, that is
+   * preserved and every `.call`, including the first, gets its own line. A single-call chain
+   * (`Receiver.method(…)`) is atomic and stays whole regardless of source (verified by
+   * [infix-attached-breaks-after-to-when-unit-too-long]).
+   */
+  @Test
+  fun `chain-receiver-attached-vs-broken-is-author-preserving`() {
+    // Default: source keeps `recv.first(…)` together → attached.
+    check(
+        input =
+            """fun f() {
+    val x = someReceiverObject.firstMethodCall(argOne).secondMethodCall(argTwo).thirdMethodCall(argThree)
+}""",
+        expected =
+            """fun f() {
+    val x = someReceiverObject.firstMethodCall(argOne)
+        .secondMethodCall(argTwo)
+        .thirdMethodCall(argThree)
+}""",
+    )
+    // Preserved: source broke the receiver onto its own line → every `.call` on its own line.
+    check(
+        input =
+            """fun f() {
+    val x = someReceiverObject
+        .firstMethodCall(argOne).secondMethodCall(argTwo).thirdMethodCall(argThree)
+}""",
+        expected =
+            """fun f() {
+    val x = someReceiverObject
+        .firstMethodCall(argOne)
+        .secondMethodCall(argTwo)
+        .thirdMethodCall(argThree)
+}""",
+    )
+  }
 
   /**
    * §7 with a lowercase receiver: the receiver-through-first-call stays on the introducer's line
@@ -1072,6 +1146,29 @@ class ContestConfigOverrides""",
  * can be not fully correct or convenient to display.
  */
 class ContestConfigOverrides""",
+      )
+
+  /**
+   * §8/§14: a trailing `// note` on the LAST parameter of a wrapped list stays inline on that
+   * parameter's line (after the §14 trailing comma) — it is not pushed onto its own line above the
+   * closing `)`. Regression: the dropped source trailing comma prevented the trailing-comment flush
+   * from reaching the comment, so it was emitted as a leading comment of `)` on its own line.
+   */
+  @Test
+  fun `trailing-comment-on-last-parameter-stays-inline`() =
+      check(
+          input =
+              """data class ContestConfig(
+    val runIds: List<RunId>,
+    @Required val priority: Int = 0,
+    @Required val tags: List<String> = emptyList(), // todo: support tags in CLICS parser
+)""",
+          expected =
+              """data class ContestConfig(
+    val runIds: List<RunId>,
+    @Required val priority: Int = 0,
+    @Required val tags: List<String> = emptyList(), // todo: support tags in CLICS parser
+)""",
       )
 
   @Test

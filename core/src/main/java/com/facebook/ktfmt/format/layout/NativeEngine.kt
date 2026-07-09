@@ -345,6 +345,36 @@ class NativeSink(
   internal fun brokenPrefixBreak(fillMode: FillMode, plusIndent: Indent, brokenPrefix: String) =
       add(NBreak(fillMode, "", plusIndent, null, brokenPrefixText = brokenPrefix))
 
+  /**
+   * Handle a source trailing comma the visitor drops (optofmt §4/§14) that is immediately followed by
+   * a SAME-LINE `// note` on the last list item. Because the comma is never emitted via [token], the
+   * usual [flushTrailingComments] (which stops at the orphaned comma) can't reach the comment, so it
+   * would otherwise be swept up later as a *leading* comment of the closing `)` and pushed onto its own
+   * line. This emits the `,` (§14 trailing comma, iff [withComma]) then the comment inline
+   * (`emptyList(), // note`), advancing the cursor past both, and returns true. The caller then emits a
+   * plain forced closing break. Returns false (cursor untouched) when there is no such same-line
+   * trailing comment — a standalone comment on its own line stays leading, handled by the closer.
+   */
+  internal fun emitDroppedTrailingCommaComment(withComma: Boolean): Boolean {
+    var j = idx
+    val sawComma = j < leaves.size && !leaves[j].isComment && leaves[j].text == ","
+    if (sawComma) j++
+    if (j >= leaves.size || !leaves[j].isComment || !sameLine(lastTokenEnd, leaves[j].start)) {
+      // No dropped-comma-then-same-line-comment here. (A last item with a same-line comment but NO
+      // source trailing comma has already had its comment flushed inline during its own emission — a
+      // separate, rarer case not handled here.)
+      return false
+    }
+    if (withComma) add(NText(","))
+    val c = leaves[j]
+    val text = c.text.trimEnd()
+    cur().children.add(NText(" "))
+    cur().children.add(NComment(text, eol = text.startsWith("//")))
+    lastTokenEnd = c.end
+    idx = j + 1
+    return true
+  }
+
   override fun forcedBreak(plusIndent: Indent) {
     resolvePending()
     pendingForced = NBreak(FillMode.FORCED, "", plusIndent, null)
