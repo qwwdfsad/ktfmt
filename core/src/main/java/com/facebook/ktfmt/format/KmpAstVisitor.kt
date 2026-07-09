@@ -2022,17 +2022,24 @@ internal class KmpAstVisitor(
       emitIntroducerRhs(right) { visit(right) }
       return
     }
-    // optofmt §2: when the surrounding context already supplies the one indent level for the wrapped
-    // operands, break them at ZERO to avoid a second (drifting) continuation indent — the operands
-    // then form a flat block at a single indent (§2/§6). This holds for an `if`/`while` condition (the
-    // parenthesis-break indents them) and for a call argument (`because("…" + "…")` — the argument
-    // list's break after `(` already puts the first operand one level in, so the rest align with it,
-    // not one deeper). Elsewhere (`val x = a && b`, an elvis in `return`) the first operand stays on
-    // the introducer's line and the chain supplies its own single continuation indent.
+    // optofmt §2/§6: when the surrounding context already supplies the one indent level for the
+    // wrapped operands, break them at ZERO to avoid a second (drifting) continuation indent — the
+    // operands then form a flat block at a single indent. This holds for an `if`/`while` condition
+    // (the parenthesis-break indents them) and for a call argument (`because("…" + "…")` — the
+    // argument list's break after `(` already puts the first operand one level in, so the rest align
+    // with it, not one deeper). It ALSO holds when this binary is itself an operand of another binary
+    // expression (a MIXED-operator expression such as `a - b * c(…) - d`): binary operators are
+    // treated as infix functions, so every operand of the whole expression — regardless of operator
+    // precedence / how the parse tree nests — aligns at the SAME single indent, never staircasing a
+    // deeper level per precedence tier. The OUTERMOST binary (the one whose parent is not itself a
+    // binary) supplies the single continuation indent; each nested one adds ZERO. Elsewhere
+    // (`val x = a && b`, an elvis in `return`) the first operand stays on the introducer's line and
+    // the chain supplies its own single continuation indent.
     val operandIndent =
         if (options.optofmt &&
             (node.parent()?.type == KtNodeTypes.CONDITION ||
-                node.parent()?.type == KtNodeTypes.VALUE_ARGUMENT))
+                node.parent()?.type == KtNodeTypes.VALUE_ARGUMENT ||
+                node.parent()?.type == KtNodeTypes.BINARY_EXPRESSION))
             ZERO
         else expressionBreakIndent
 

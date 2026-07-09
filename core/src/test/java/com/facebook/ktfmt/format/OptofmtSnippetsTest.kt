@@ -915,6 +915,34 @@ fun f() {
 }""",
       )
 
+  /**
+   * §2/§6: binary operators are treated as infix functions — a MIXED-operator arithmetic expression
+   * (`a - b * c(…) - d`) forms a flat block where every operand sits at ONE shared indent, regardless
+   * of operator precedence / how the parse tree nests. Regression: the higher-precedence `*`
+   * sub-expression drifted its operand a SECOND level deep (`getProblemLooseScorePerMinute(…)` at +8
+   * instead of +4), because a binary expression nested inside another binary expression opened its
+   * own extra continuation indent. From a Codeforces scoring expression.
+   */
+  @Test
+  fun `mixed-operator-expression-is-flat-block`() =
+      check(
+          input =
+              """fun f() {
+    val score = maxOf(maxScore * 3 / 10, ceil(maxScore - submission.relativeTimeSeconds.inWholeMinutes * getProblemLooseScorePerMinute(maxScore, contestLength.inWholeMinutes)) - 50 * wrongAttempts)
+}""",
+          expected =
+              """fun f() {
+    val score = maxOf(
+        maxScore * 3 / 10,
+        ceil(
+            maxScore -
+            submission.relativeTimeSeconds.inWholeMinutes *
+            getProblemLooseScorePerMinute(maxScore, contestLength.inWholeMinutes),
+        ) - 50 * wrongAttempts,
+    )
+}""",
+      )
+
   /** §2/§6: the same flat-operand rule for a `+`-concat as a direct (non-chained) call argument. */
   @Test
   fun `concat-argument-is-flat-block-direct`() =
