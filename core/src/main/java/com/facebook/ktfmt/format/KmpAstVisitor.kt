@@ -663,6 +663,28 @@ internal class KmpAstVisitor(
   }
 
   /**
+   * A qualified expression that is really a SINGLE call — `Receiver.Factory(args)`, `a.b.c.of(x)` —
+   * where the receiver-through-first-call (§7) spans every part, so there is no subsequent
+   * `.call`/`.property` that would break to its own line. Such a chain never wraps at the chain level;
+   * only its sole call's argument list wraps. As an introducer RHS that must break, it needs the
+   * non-chain block-wrap (args one level BELOW the call opener) rather than the §7 no-block path
+   * (which is for multi-call chains and would leave the sole call's args under-indented, colliding
+   * with the opener). Excludes a block-bodied base receiver (`object {…}.f()`), whose first call
+   * legitimately drops below the `}`.
+   */
+  private fun isSoleUnitChain(node: KmpNode?): Boolean {
+    if (!options.optofmt || !isCallChain(node)) return false
+    val parts = breakIntoParts(node!!)
+    if (parts.size < 2) return false
+    val baseType = parts.first().type
+    if (baseType == KtNodeTypes.OBJECT_LITERAL || baseType == KtNodeTypes.LAMBDA_EXPRESSION)
+        return false
+    val infos = computeGroupingInfo(parts, useBlockLikeLambdaStyle = false)
+    for (i in 1 until parts.size) if (!infos[i].shouldCloseGroup) return false
+    return true
+  }
+
+  /**
    * optofmt §1/§3: emit an introducer's right-hand side ([rhsExpr], built by [buildRhs]) as two
    * competing candidate layouts and let the optimizer keep the lower-§1-cost one. Used for every
    * `= rhs` / `name = rhs` introducer (property init, assignment, expression body, named argument):
@@ -711,10 +733,24 @@ internal class KmpAstVisitor(
     val attached = sink.capture { sink.space(); sink.appendSubtree(rhs) }
     val broken =
         sink.capture {
-          if (isCallChain(rhsExpr) && !isSoleTrailingLambdaChain(rhsExpr)) {
-            // §3/§7: break after `=` for a chain is penalized only below line-count, so §3 attaches
-            // the receiver-through-first-call when that fits without costing extra lines, but a chain
-            // whose receiver-first-call would overflow (or tear its args) still breaks after `=`.
+          if (isCallChain(rhsExpr) &&
+              !isSoleTrailingLambdaChain(rhsExpr) &&
+              isSoleUnitChain(rhsExpr)) {
+            // A single-call chain (`Receiver.Factory(args)`, no subsequent `.calls`): when it drops to
+            // its own line, its wrapping arguments must sit one level BELOW the call opener. Wrap in a
+            // block whose base is the break column (like a non-chain call) so the sole call's args land
+            // at +2 instead of colliding with the opener at +1. Keep the cheaper chain-introducer break
+            // so an OUTER introducer (`=`, or the infix `to`'s enclosing `=`) still stays attached.
+            block(expressionBreakIndent) {
+              sink.forcedChainIntroducerBreak(ZERO)
+              sink.appendSubtree(rhs)
+            }
+          } else if (isCallChain(rhsExpr) && !isSoleTrailingLambdaChain(rhsExpr)) {
+            // §3/§7 multi-call chain: break for a chain is penalized only below line-count, so §3
+            // attaches the receiver-through-first-call when that fits without costing extra lines, but
+            // a chain whose receiver-first-call would overflow (or tear its args) still breaks after
+            // `=`. No enclosing block — the chain supplies its own single indent (§7), each subsequent
+            // `.call` at that one level.
             sink.forcedChainIntroducerBreak(expressionBreakIndent)
             sink.appendSubtree(rhs)
           } else {
@@ -1938,10 +1974,24 @@ internal class KmpAstVisitor(
       current = current.binaryLeft()
     }
 
-    // optofmt §3: an introducer infix call (`a to b`) stays attached to its right-hand side, which
-    // wraps its own contents at a single indent. Restricted to a known introducer set and to a
-    // single (non-chained) operator, so long chains of other word operators still wrap normally.
+    // optofmt §3: an introducer infix call (`a to b`) is treated exactly like the `=` introducer — its
+    // RHS attaches to the `to` line WHEN IT FITS, otherwise it breaks after `to` and drops to one
+    // indent (§3 "wrap the contents, at a single indent"). Restricted to a known introducer set and to
+    // a single (non-chained) operator, so long chains of other word operators still wrap normally.
+    // Reusing [emitIntroducerRhs] means the break after `to` registers as a chain-introducer break
+    // (ranked BELOW line-count), which is CHEAPER than breaking an OUTER introducer such as `=` (a
+    // full introducer break, ranked ABOVE line-count). So when `val pair: T = a to Foo(…)` is too long
+    // to keep the whole unit on the `=` line, §1 keeps `=` attached and breaks after `to`
+    // (`= a to` ⏎ `Foo(…)`), rather than breaking after `=` — the innermost introducer yields first.
     val isAttachedInfix = options.optofmt && opText in infixIntroducers && parts.size == 1
+    if (isAttachedInfix) {
+      val right = node.binaryRight()
+      visit(node.binaryLeft())
+      builder.space()
+      emit(opText)
+      emitIntroducerRhs(right) { visit(right) }
+      return
+    }
     // optofmt §2: when the surrounding context already supplies the one indent level for the wrapped
     // operands, break them at ZERO to avoid a second (drifting) continuation indent — the operands
     // then form a flat block at a single indent (§2/§6). This holds for an `if`/`while` condition (the
@@ -1950,10 +2000,9 @@ internal class KmpAstVisitor(
     // not one deeper). Elsewhere (`val x = a && b`, an elvis in `return`) the first operand stays on
     // the introducer's line and the chain supplies its own single continuation indent.
     val operandIndent =
-        if (isAttachedInfix ||
-            (options.optofmt &&
-                (node.parent()?.type == KtNodeTypes.CONDITION ||
-                    node.parent()?.type == KtNodeTypes.VALUE_ARGUMENT)))
+        if (options.optofmt &&
+            (node.parent()?.type == KtNodeTypes.CONDITION ||
+                node.parent()?.type == KtNodeTypes.VALUE_ARGUMENT))
             ZERO
         else expressionBreakIndent
 
@@ -1978,17 +2027,11 @@ internal class KmpAstVisitor(
           builder.space()
           if (isFirst) builder.open(operandIndent)
           emit(pop)
-          if (isAttachedInfix) {
-            // Keep the infix introducer on the same line as its right-hand side.
-            builder.space()
-          } else {
-            val fillMode =
-                if (part.child(KtNodeTypes.OPERATION_REFERENCE)?.hasLineBreakingCommentBefore() ==
-                    true)
-                    FillMode.INDEPENDENT
-                else FillMode.UNIFIED
-            builder.breakOp(fillMode, " ", ZERO)
-          }
+          val fillMode =
+              if (part.child(KtNodeTypes.OPERATION_REFERENCE)?.hasLineBreakingCommentBefore() == true)
+                  FillMode.INDEPENDENT
+              else FillMode.UNIFIED
+          builder.breakOp(fillMode, " ", ZERO)
         }
       }
       visit(part.binaryRight())

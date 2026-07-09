@@ -95,25 +95,25 @@ class OptofmtSnippetsTest {
       )
 
   /**
-   * §3/§7: infix `to` stays attached to its RHS opener even when the whole
-   * `orgInfo.id to OverrideOrganizations.Override(` unit is too long to sit on the `=` line. Two
-   * introducers compete: keeping `= orgInfo.id to OverrideOrganizations.Override(` on the header
-   * overflows (~110 cols), so the outer `=` breaks and drops the whole infix unit below at one indent
-   * (§7 "unit too long → break after the introducer"). It must NOT break after `to`
-   * (`= orgInfo.id to\n    Override(` — the §3 anti-pattern), nor treat the sole call
-   * `OverrideOrganizations.Override(…)` as a splittable chain (`…Organizations\n.Override(` — a
-   * receiver-through-first-call is atomic, §7). Regression: optofmt used to split the receiver from
-   * its `.Override` call to save a line.
+   * §3: when `val pair: T = a to Foo(…)` is too long to keep the whole `a to Foo(` unit on the `=`
+   * line (~110 cols here), the INNERMOST introducer yields first: the assignment `=` stays attached
+   * and the infix `to` breaks (`= orgInfo.id to` ⏎ `OverrideOrganizations.Override(`), the RHS opener
+   * one indent in and its arguments one further in (§4). It must NOT break after `=` (keeping `=`
+   * attached is preferred), nor split the sole call `OverrideOrganizations.Override(…)` as a chain
+   * (`…Organizations\n.Override(` — a receiver-through-first-call is atomic, §7). Regressions fixed:
+   * (a) optofmt used to split the receiver from its `.Override` call to save a line; (b) the sole
+   * call's wrapped args used to under-indent (col 4, colliding with the opener) when the introducer
+   * broke.
    */
   @Test
-  fun `infix-attached-breaks-after-eq-when-unit-too-long`() =
+  fun `infix-attached-breaks-after-to-when-unit-too-long`() =
       check(
           input =
               """val pair: Pair<OrganizationId, OverrideOrganizations.Override> = orgInfo.id to OverrideOrganizations
     .Override(fullName = substituteRaw(fullName), displayName = substituteRaw(displayName))""",
           expected =
-              """val pair: Pair<OrganizationId, OverrideOrganizations.Override> =
-    orgInfo.id to OverrideOrganizations.Override(
+              """val pair: Pair<OrganizationId, OverrideOrganizations.Override> = orgInfo.id to
+    OverrideOrganizations.Override(
         fullName = substituteRaw(fullName),
         displayName = substituteRaw(displayName),
     )""",

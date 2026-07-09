@@ -90,9 +90,9 @@ class OptofmtCorpusGateTest {
      * chain re-architecture solved, pending the same treatment for that construct). The last is a
      * buggy-expected example: RULES §6 does not specify `as`-cast wrap direction, so the corpus's
      * break-before-`as` is not derivable from the rules (flag for snippets.py, per "rules win").
-     * (`infix-attached-extra-1` used to be here — its corpus value broke after the infix `to`, the §3
-     * anti-pattern; snippets.py was corrected to the rules-correct break-after-`=` and optofmt now
-     * matches it — see OptofmtSnippetsTest.`infix-attached-breaks-after-eq-when-unit-too-long`.)
+     * (`infix-attached-extra-1` used to be here as a TODO gap; optofmt now matches its corpus value —
+     * `=` stays attached and the infix `to` breaks — see
+     * OptofmtSnippetsTest.`infix-attached-breaks-after-to-when-unit-too-long`.)
      */
     val KNOWN_DIVERGENCES =
         setOf(
