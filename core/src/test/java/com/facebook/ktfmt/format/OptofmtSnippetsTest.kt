@@ -519,12 +519,14 @@ class AdjustQueryTests {
       )
 
   /**
-   * §2: `receiver.run { … }` where the receiver is a call that WRAPS its arguments. The receiver
-   * wraps and `.run {` breaks to its own line; the lambda body must then indent one level below `.run`
-   * (§2), not sit at `.run`'s column. From Exposed Algorithms.kt:33-45. Regression: the trailing-lambda
-   * body was one level too shallow — the native engine can't pick the body indent via an `Indent.If`
-   * keyed on the chain break, so it always used the "hang" indent even when the chain broke. Fixed by
-   * offering hang vs. broken as explicit candidates (the hang one forces the receiver flat).
+   * §7: `receiver.run { … }` where the receiver is a call that WRAPS its arguments. The receiver
+   * wraps ONLY its own arguments (at a single indent), and the sole trailing-lambda call `.run {`
+   * stays attached to the receiver's `)` (`AesBytesEncryptor(\n args,\n).run {`) — the lambda call
+   * applies directly to the receiver-through-first-call, so it is not a "subsequent" chain link to
+   * break onto its own line. The lambda body hangs one indent below the `.run {` line. From Exposed
+   * Algorithms.kt:33-45. (Earlier the whole chain was wrapped in the chain's continuation block, so
+   * the receiver's args drifted to two indents and `.run` broke onto its own line; §1 now prefers the
+   * fewer-line attached layout.)
    */
   @Test
   fun `scoping-call-on-wrapping-receiver-indents-body`() =
@@ -543,15 +545,43 @@ object Algorithms {
               """object Algorithms {
     fun AES_256_PBE_GCM(password: CharSequence, salt: CharSequence): Encryptor {
         return AesBytesEncryptor(
-                password.toString(),
-                salt,
-                KeyGenerators.secureRandom(BLOCK_LEN),
-                AesBytesEncryptor.CipherAlgorithm.GCM,
-            )
-            .run {
-                makeEncryptor()
-                finalizeSetup()
-            }
+            password.toString(),
+            salt,
+            KeyGenerators.secureRandom(BLOCK_LEN),
+            AesBytesEncryptor.CipherAlgorithm.GCM,
+        ).run {
+            makeEncryptor()
+            finalizeSetup()
+        }
+    }
+}""",
+      )
+
+  /**
+   * §7: a call whose arguments wrap, followed by a sole trailing-lambda call (`merge(a, b, c).collect
+   * { … }`). The base call wraps ONLY its own arguments at a single indent, its `)` closes aligned
+   * with the call, and `.collect {` stays attached to that `)` — the lambda applies directly to the
+   * receiver-through-first-call, so it is not a "subsequent" `.call` to drop onto its own line. The
+   * lambda body hangs one indent below. Regression: the args drifted to two indents (chain block +
+   * arg list) and `.collect` broke onto its own line.
+   */
+  @Test
+  fun `wrapping-call-with-sole-trailing-lambda-attaches`() =
+      check(
+          input =
+              """fun f() {
+    merge(flow.map { Update(it) }, triggerFlow.receiveAsFlow().conflate(), advancedPropsStateFlow.map { Trigger }).collect {
+        handle(it)
+    }
+}""",
+          expected =
+              """fun f() {
+    merge(
+        flow.map { Update(it) },
+        triggerFlow.receiveAsFlow().conflate(),
+        advancedPropsStateFlow.map { Trigger },
+    ).collect {
+        handle(it)
     }
 }""",
       )
@@ -836,6 +866,38 @@ fun AdaptiveDetailLayout(
     @Suppress("ControlFlowWithEmptyBody")
     while (bufferEndCounter <= globalIndex) {}
 }""",
+      )
+
+  /**
+   * §3/§12: when an argument-carrying annotation on a constructor parameter-property breaks onto its
+   * own line (§12), the parameter's `= <default>` initializer must stay attached when the default
+   * value fits (§3) — it must NOT break after `=`. Regression: the §12 annotation break made the whole
+   * parameter level multi-line, and the greedy UNIFIED break on `=` fired off that, splitting a short
+   * `= id.value` / `= null` onto its own line.
+   */
+  @Test
+  fun `annotated-constructor-param-default-stays-attached`() =
+      check(
+          input =
+              """@Serializable
+public data class AccountInfo(
+    val id: AccountId,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val username: String = id.value,
+    val type: String,
+    @Serializable(with = AccountCredentialSerializer::class) val password: Credential? = null,
+    val name: String? = null,
+)""",
+          expected =
+              """@Serializable
+public data class AccountInfo(
+    val id: AccountId,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+    val username: String = id.value,
+    val type: String,
+    @Serializable(with = AccountCredentialSerializer::class)
+    val password: Credential? = null,
+    val name: String? = null,
+)""",
       )
 
   /**

@@ -1902,8 +1902,19 @@ internal class KmpAstVisitor(
       if (default != null) {
         builder.space()
         emit("=")
-        builder.breakOp(FillMode.UNIFIED, " ", expressionBreakIndent)
-        block(expressionBreakIndent) { visit(default) }
+        if (isLambdaOrScopingFunction(default)) {
+          visitLambdaOrScopingFunction(default)
+        } else if (options.optofmt) {
+          // §3: keep the `=` introducer attached to a default value that fits, exactly like a
+          // property initializer (see [visitProperty]). The greedy UNIFIED break below fires
+          // whenever the *parameter* level is multi-line — e.g. when a §9 annotation breaks onto
+          // its own line above the parameter — even though the default value itself fits, which
+          // would wrongly split `@Ann val x: String = id.value` after the `=`.
+          emitIntroducerRhs(default) { visit(default) }
+        } else {
+          builder.breakOp(FillMode.UNIFIED, " ", expressionBreakIndent)
+          block(expressionBreakIndent) { visit(default) }
+        }
       }
     }
   }
@@ -2507,9 +2518,51 @@ internal class KmpAstVisitor(
       }
       return
     }
+    val baseType = parts.firstOrNull()?.type
+    val baseIsBlockBodied =
+        baseType == KtNodeTypes.OBJECT_LITERAL || baseType == KtNodeTypes.LAMBDA_EXPRESSION
+
+    // §7: when the trailing lambda call applies DIRECTLY to the receiver (`merge(args).collect { … }`,
+    // `Foo(a, b).apply { … }`, `foo.let { … }` — a two-part chain), offer ATTACH vs BROKEN and let §1
+    // pick by line count. The receiver (`head`) and the trailing `.call { … }` (`tail`) are captured
+    // separately, so each source token is consumed exactly once (capturing the same tokens twice would
+    // desync the comment/token cursor). A block-bodied base (`object … {}.also {}`) is not "on the
+    // line", so its `.call` correctly drops below the `}` — handled by the general path below.
+    if (options.optofmt && parts.size == 2 && !baseIsBlockBodied) {
+      val head = sink.capture { visit(parts[0]) }
+      val tail =
+          sink.capture {
+            emit(parts[1].operationSignValue())
+            visit(parts[1].qualifiedSelector())
+          }
+      // ATTACH: the receiver wraps only its OWN arguments at a single indent (it is not wrapped in the
+      // chain's continuation block), the trailing `.call {` concatenates onto its `)`
+      // (`merge(\n args,\n).collect { … }`), and the lambda body hangs one indent below. When the
+      // receiver fits on one line this is the plain hang (`Foo(a, b).apply { … }`).
+      val attach =
+          sink.capture {
+            sink.appendSubtree(head)
+            sink.appendSubtree(tail)
+          }
+      // BROKEN: the receiver sits in the chain's continuation block and the trailing `.call {` breaks
+      // onto its own line at one indent (§7). Preferred by §1 when the receiver FITS on one line —
+      // dropping the short `.call` costs fewer lines than hanging the lambda body.
+      val broken =
+          sink.capture {
+            block(expressionBreakIndent) {
+              sink.appendSubtree(head)
+              sink.forcedChainStructuralBreak(ZERO)
+              sink.appendSubtree(tail)
+            }
+          }
+      sink.emitAlt(listOf(attach, broken))
+      return
+    }
+
     val nameTag = genSym()
     // Preamble = the whole chain with the trailing lambda's BODY omitted (…`.run` and any value args,
-    // no `{ … }`); it carries the §7 UNIFIED breaks between parts.
+    // no `{ … }`); it carries the §7 UNIFIED breaks between parts. Captured BEFORE the body so the
+    // source-token cursor advances in source order (the body's tokens come after the preamble's).
     val preamble =
         sink.capture {
           emitChainParts(
@@ -2522,6 +2575,10 @@ internal class KmpAstVisitor(
           sink.space()
           visitArgumentInternal(lambda, wrapInBlock = false, brokeBeforeBrace = null)
         }
+    // Multi-call chain: offer HANG (whole preamble flat, lambda body one indent below the chain line)
+    // vs BROKEN (chain wraps per §7, the trailing `.call {` on its own line) and let §1 pick by line
+    // count. The hang candidate forces its preamble FLAT ([NFlat]) so it is only viable while the whole
+    // chain fits on one line; a wrapping chain makes it overflow and §1 falls to BROKEN.
     val hang =
         sink.capture {
           block(expressionBreakIndent) {
