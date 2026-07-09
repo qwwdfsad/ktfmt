@@ -289,18 +289,7 @@ internal class KmpAstVisitor(
         // inline (`val x: T get() = "hi"`), and a block-valued body (`get() = lock.withLock { … }`)
         // keeps `get() = … {` on the property line with the block hanging — never breaking after the
         // type just because the body is multi-line.
-        val keepAccessorInline =
-            options.optofmt &&
-                components.size == 1 &&
-                components[0].type == KtNodeTypes.PROPERTY_ACCESSOR &&
-                components[0].expressionBody() != null &&
-                components[0].child(KtNodeTypes.BLOCK) == null &&
-                // A comment between the type and the accessor forces `get()` onto its own line; it must
-                // then sit one indent in (the block-indent path below), not glue to the property level,
-                // so don't take the inline path. The comment may be a sibling trailing the type
-                // (`val x: T // note`) or the accessor's own leading child (`val x: T\n // note\n get()`).
-                !components[0].hasLineBreakingCommentBefore() &&
-                !components[0].startsWithComment()
+        val keepAccessorInline = propertyAccessorWillInline(node)
         if (keepAccessorInline) {
           // Attached at the property's own level (no extra block indent): `get()` sits on the
           // declaration line and its `= <body>` introducer (§3) hangs the body one level in.
@@ -714,6 +703,17 @@ internal class KmpAstVisitor(
     return prev != null && prev.type in KtTokens.COMMENTS
   }
 
+  /**
+   * An `if` expression whose `then` branch is not a block, i.e. one that wraps by breaking before
+   * `else` (see [visitIfExpression]). A block-branched `if` (`if (c) { … } else { … }`) instead
+   * anchors its `else` on the closing brace and needs no continuation indent.
+   */
+  private fun isNonBlockThenIf(node: KmpNode?): Boolean {
+    if (node?.type != KtNodeTypes.IF) return false
+    val thenBody = node.child(KtNodeTypes.THEN)?.meaningfulChildren()?.firstOrNull()
+    return thenBody?.type != KtNodeTypes.BLOCK
+  }
+
   private fun emitIntroducerRhs(rhsExpr: KmpNode?, buildRhs: () -> Unit) {
     val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
     // §8: a comment authored on its own line between the introducer and its RHS must stay on its own
@@ -730,7 +730,19 @@ internal class KmpAstVisitor(
       return
     }
     val rhs = sink.capture(buildRhs)
-    val attached = sink.capture { sink.space(); sink.appendSubtree(rhs) }
+    // §2/§3: a non-block `if`/`else` RHS attaches (`= if (cond) then`) but its wrapped `else` clause
+    // is a continuation that must sit one indent past the owner — never at the owner's own column
+    // (which for a top-level declaration would put a bare `else` at column 0). The `else` break is
+    // emitted at ZERO relative to the if-expression's level, which is correct when the `if` starts
+    // its own line (statement, or the broken candidate below where a block supplies the indent) but
+    // wrong for the attached candidate, whose `if` hangs mid-line with no enclosing indent. Wrap the
+    // attached subtree in one indent level so the `else` continuation lands there.
+    val attached =
+        sink.capture {
+          sink.space()
+          if (isNonBlockThenIf(rhsExpr)) block(expressionBreakIndent) { sink.appendSubtree(rhs) }
+          else sink.appendSubtree(rhs)
+        }
     val broken =
         sink.capture {
           if (isCallChain(rhsExpr) &&
@@ -2107,7 +2119,35 @@ internal class KmpAstVisitor(
   }
 
   /** A declaration that occupies a single source line (used by optofmt §11 grouping). */
-  private fun isOneLineDeclaration(node: KmpNode): Boolean = !node.text.contains('\n')
+  private fun isOneLineDeclaration(node: KmpNode): Boolean =
+      // A property whose single expression-bodied accessor optofmt pulls inline (`val x: T get() = …`)
+      // renders as one line even when the source split `get()` onto its own line — so judge it by its
+      // children (none of which spans multiple lines), ignoring the source break before the accessor.
+      if (propertyAccessorWillInline(node)) node.meaningfulChildren().none { it.text.contains('\n') }
+      else !node.text.contains('\n')
+
+  /**
+   * optofmt §1/§3: whether this property's accessors will be pulled inline onto the declaration line —
+   * a single expression-bodied `get()`/`set()` with no block body and no intervening comment (see
+   * [visitProperty]). Such a property renders as ONE line even if the source split `get()` off, so
+   * §11 grouping ([isOneLineDeclaration]) must treat it as one-line and not force a blank around it.
+   */
+  private fun propertyAccessorWillInline(node: KmpNode): Boolean {
+    if (!options.optofmt || node.type != KtNodeTypes.PROPERTY) return false
+    val components =
+        node.meaningfulChildren().filter {
+          it.type == KtNodeTypes.PROPERTY_ACCESSOR || it.type == KtNodeTypes.BACKING_FIELD
+        }
+    return components.size == 1 &&
+        components[0].type == KtNodeTypes.PROPERTY_ACCESSOR &&
+        components[0].expressionBody() != null &&
+        components[0].child(KtNodeTypes.BLOCK) == null &&
+        // A comment between the type and the accessor forces `get()` onto its own line; it must then
+        // sit one indent in, not glue to the property level, so it is NOT inlined. The comment may be
+        // a sibling trailing the type (`val x: T // note`) or the accessor's own leading child.
+        !components[0].hasLineBreakingCommentBefore() &&
+        !components[0].startsWithComment()
+  }
 
   /**
    * True when [args] is exactly one argument (named or not) that is itself a call with a non-empty

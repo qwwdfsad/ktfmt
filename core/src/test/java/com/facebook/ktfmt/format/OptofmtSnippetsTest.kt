@@ -213,6 +213,44 @@ runsByTeamId.applyEvent(state)
     }
 }""")
 
+  /**
+   * §2/§3: a non-block `if`/`else` expression body attaches its `= if (cond) then` to the
+   * declaration line (§3), but the wrapped `else` clause is a continuation and must sit one indent
+   * level deeper — never at the owner's column (which for a top-level declaration would leave a bare
+   * `else` at column 0). From ktor Authorization.withOAuth.
+   */
+  @Test
+  fun `non-block-if-else-expression-body-indents-else-continuation`() =
+      check(
+          input =
+              "public fun Authorization.withOAuth(token: Credential?): Authorization = " +
+                  "if (token == null) this else withHeader(name = HttpHeaders.Authorization, " +
+                  "value = Credential(displayValue = \"OAuth \${token.displayValue}\", " +
+                  "value = \"OAuth \${token.value}\"))",
+          expected =
+              """public fun Authorization.withOAuth(token: Credential?): Authorization = if (token == null) this
+    else
+        withHeader(
+            name = HttpHeaders.Authorization,
+            value = Credential(
+                displayValue = "OAuth ${'$'}{token.displayValue}",
+                value = "OAuth ${'$'}{token.value}",
+            ),
+        )""",
+      )
+
+  /** §2/§3: the common shape — only the `else` clause wraps, staying one indent below the header. */
+  @Test
+  fun `non-block-if-else-expression-body-short-else-hangs-at-one-indent`() =
+      check(
+          input =
+              "fun label(n: Int): String = if (n < 0) negativeValueLabelWhichIsQuiteLong " +
+                  "else if (n == 0) zeroValueLabelHere else positiveValueLabelHere",
+          expected =
+              """fun label(n: Int): String = if (n < 0) negativeValueLabelWhichIsQuiteLong
+    else if (n == 0) zeroValueLabelHere else positiveValueLabelHere""",
+      )
+
   @Test
   fun `long-call-chain`() =
       check(
@@ -1349,6 +1387,31 @@ fun testSomething() {}""",
       check(
           input = """val placeOfGetter: String get() = "hello"""",
           expected = """val placeOfGetter: String get() = "hello"""",
+      )
+
+  /**
+   * §11: two adjacent properties whose single expression-bodied accessors optofmt pulls inline
+   * (`val x: T get() = …`) are one-line declarations of the same kind, so they stay TIGHT — the
+   * source break before each `get()` collapses and NO blank line is forced between them. Regression:
+   * the blank-line rule judged one-line-ness from the source text (which split `get()` onto its own
+   * line) and so hit the "property-with-accessor → force a blank" clause, inserting a spurious blank
+   * between the collapsed one-liners.
+   */
+  @Test
+  fun `inlined-accessor-properties-stay-tight`() =
+      check(
+          input =
+              """public sealed interface CatsSettings {
+    public val timeZone: TimeZone
+        get() = TimeZone.of("Asia/Vladivostok")
+    public val resultType: ContestResultType
+        get() = ContestResultType.ICPC
+}""",
+          expected =
+              """public sealed interface CatsSettings {
+    public val timeZone: TimeZone get() = TimeZone.of("Asia/Vladivostok")
+    public val resultType: ContestResultType get() = ContestResultType.ICPC
+}""",
       )
 
   /**
