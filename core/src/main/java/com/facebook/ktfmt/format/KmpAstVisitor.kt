@@ -460,8 +460,10 @@ internal class KmpAstVisitor(
             visitLambdaOrScopingFunction(bodyExpression)
           } else if (options.optofmt) {
             // optofmt §1/§3/§7: an expression body's `=` is an introducer, exactly like a property
-            // initializer's `=` (see visitProperty).
-            emitIntroducerRhs(bodyExpression) { visit(bodyExpression) }
+            // initializer's `=` (see visitProperty). `preserveSingleLineRhs` (author-preserving
+            // whole-RHS-on-one-line) is enabled ONLY here — for expression-body functions — not for
+            // property/assignment/named-arg/`by`/`to` introducers.
+            emitIntroducerRhs(bodyExpression, preserveSingleLineRhs = true) { visit(bodyExpression) }
           } else {
             block(expressionBreakIndent) {
               builder.breakOp(FillMode.INDEPENDENT, " ", ZERO)
@@ -704,6 +706,25 @@ internal class KmpAstVisitor(
   }
 
   /**
+   * True if the author placed [node] (an introducer's right-hand side) on its own line — i.e. broke
+   * the line right after the `=`/`by`/`to`/named-arg `=` that introduces it. Detected by scanning the
+   * source backwards over the run of spaces/tabs immediately before the RHS: if the first non-blank
+   * character is a newline, the author put the RHS on the next line.
+   *
+   * This gates the single-line-RHS collapse ([emitIntroducerRhs]'s `brokenFlat`) so it is
+   * author-PRESERVING, not forced: a RHS the author already wrote on its own line stays there (when it
+   * fits) rather than being pulled back onto the introducer's line and wrapped; a RHS the author wrote
+   * attached keeps optofmt's default attach behavior. Mirrors [sourceBreaksAfterChainReceiver] for
+   * chains. Idempotent: the collapsed output still has the RHS on its own line, so re-formatting sees
+   * the same break and keeps it.
+   */
+  private fun sourceBreaksBeforeRhs(node: KmpNode): Boolean {
+    var i = node.startOffset - 1
+    while (i >= 0 && (code[i] == ' ' || code[i] == '\t')) i--
+    return i >= 0 && code[i] == '\n'
+  }
+
+  /**
    * An `if` expression whose `then` branch is not a block, i.e. one that wraps by breaking before
    * `else` (see [visitIfExpression]). A block-branched `if` (`if (c) { … } else { … }`) instead
    * anchors its `else` on the closing brace and needs no continuation indent.
@@ -714,7 +735,11 @@ internal class KmpAstVisitor(
     return thenBody?.type != KtNodeTypes.BLOCK
   }
 
-  private fun emitIntroducerRhs(rhsExpr: KmpNode?, buildRhs: () -> Unit) {
+  private fun emitIntroducerRhs(
+      rhsExpr: KmpNode?,
+      preserveSingleLineRhs: Boolean = false,
+      buildRhs: () -> Unit,
+  ) {
     val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
     // §8: a comment authored on its own line between the introducer and its RHS must stay on its own
     // line. Offering the attached candidate would let §1 hoist it onto the introducer line (that
@@ -740,8 +765,9 @@ internal class KmpAstVisitor(
     val attached =
         sink.capture {
           sink.space()
-          if (isNonBlockThenIf(rhsExpr)) block(expressionBreakIndent) { sink.appendSubtree(rhs) }
-          else sink.appendSubtree(rhs)
+          if (isNonBlockThenIf(rhsExpr))
+              block(expressionBreakIndent) { sink.appendRhsBodySubtree(rhs) }
+          else sink.appendRhsBodySubtree(rhs)
         }
     val broken =
         sink.capture {
@@ -755,7 +781,7 @@ internal class KmpAstVisitor(
             // so an OUTER introducer (`=`, or the infix `to`'s enclosing `=`) still stays attached.
             block(expressionBreakIndent) {
               sink.forcedChainIntroducerBreak(ZERO)
-              sink.appendSubtree(rhs)
+              sink.appendRhsBodySubtree(rhs)
             }
           } else if (isCallChain(rhsExpr) && !isSoleTrailingLambdaChain(rhsExpr)) {
             // §3/§7 multi-call chain: break for a chain is penalized only below line-count, so §3
@@ -764,17 +790,39 @@ internal class KmpAstVisitor(
             // `=`. No enclosing block — the chain supplies its own single indent (§7), each subsequent
             // `.call` at that one level.
             sink.forcedChainIntroducerBreak(expressionBreakIndent)
-            sink.appendSubtree(rhs)
+            sink.appendRhsBodySubtree(rhs)
           } else {
             // Non-chain RHS, or a sole-trailing-lambda chain (`GlobalScope.produce(x) { … }`): wrap in
             // a block so the hang's body indent anchors at the break column, not the introducer's.
             block(expressionBreakIndent) {
               sink.forcedIntroducerBreak(ZERO)
-              sink.appendSubtree(rhs)
+              sink.appendRhsBodySubtree(rhs)
             }
           }
         }
-    sink.emitAlt(listOf(attached, broken))
+    // §1/§7 single-line-RHS preference — AUTHOR-PRESERVING (see [sourceBreaksBeforeRhs]). When the
+    // author already wrote the RHS on its own line (broke right after the introducer), offer a
+    // candidate that keeps the WHOLE RHS on that one line rather than pulling it back onto the
+    // introducer's line and wrapping it — a split `if/else`, a staircased chain, or one-arg-per-line
+    // call. The RHS is forced flat ([appendFlatSubtree]); one that cannot be a single line (a block/
+    // lambda body, an EOL comment, or one simply too wide to fit at this indent) overflows or is
+    // poisoned, so this candidate only wins when it genuinely fits. Its break is UNPENALIZED (plain
+    // [forcedBreak], not an introducer break) so plain line-count decides: an RHS that also fits on
+    // the introducer's OWN line still prefers [attached] (one fewer line), while anything wider that
+    // fits only on the next line stays there whole. Listed FIRST so that when it ties an attach-and-
+    // wrap layout on every tracked metric except the RHS-wrap count (e.g. a two-link chain where
+    // attaching drops exactly one `.call`), [Metrics.rhsWrapLines] keeps it. NOT offered when the
+    // author wrote the RHS attached, so optofmt does not FORCE this layout — it only preserves it.
+    if (preserveSingleLineRhs && rhsExpr != null && sourceBreaksBeforeRhs(rhsExpr)) {
+      val brokenFlat =
+          sink.capture {
+            sink.forcedBreak(expressionBreakIndent)
+            sink.appendFlatSubtree(rhs)
+          }
+      sink.emitAlt(listOf(brokenFlat, attached, broken))
+    } else {
+      sink.emitAlt(listOf(attached, broken))
+    }
   }
 
   private fun visitParameterList(node: KmpNode) {

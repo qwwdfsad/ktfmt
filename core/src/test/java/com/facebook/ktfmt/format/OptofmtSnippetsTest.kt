@@ -1626,4 +1626,52 @@ internal val pendingInitializationLambdas = IdentityHashMap<Entity<Any>, Mutable
     }.filterValues { it !is JsonNull }
 }""",
       )
+
+  /**
+   * §3 author-preserving single-line RHS: when the author broke the line right after the introducer
+   * and the WHOLE right-hand side fits on that one line, keep it there rather than pulling it back
+   * onto the introducer's line and splitting the `if/else`. (Original: kotlinx.coroutines
+   * Deferred.awaitAll.)
+   */
+  @Test
+  fun `source-broken-if-else-expression-body-stays-on-one-line`() =
+      check(
+          input =
+              """public suspend fun <T> awaitAll(vararg deferreds: Deferred<T>): List<T> =
+    if (deferreds.isEmpty()) emptyList() else AwaitAll(deferreds).await()""",
+          expected =
+              """public suspend fun <T> awaitAll(vararg deferreds: Deferred<T>): List<T> =
+    if (deferreds.isEmpty()) emptyList() else AwaitAll(deferreds).await()""",
+      )
+
+  /**
+   * §7 author-preserving single-line RHS: a call-chain the author placed on its own line after `=`
+   * stays whole rather than attaching the receiver-through-first-call and dropping the trailing
+   * `.call` to its own line. (Original: kotlinx.coroutines ReactiveFlow.awaitFirstOrNull.)
+   */
+  @Test
+  fun `source-broken-chain-expression-body-stays-on-one-line`() =
+      check(
+          input =
+              """public suspend fun <T> Flow.Publisher<T>.awaitFirstOrNull(): T =
+    FlowAdapters.toPublisher(this).awaitFirstOrNull()""",
+          expected =
+              """public suspend fun <T> Flow.Publisher<T>.awaitFirstOrNull(): T =
+    FlowAdapters.toPublisher(this).awaitFirstOrNull()""",
+      )
+
+  /**
+   * The single-line-RHS collapse is NOT forced: when the author wrote the RHS attached to the
+   * introducer, optofmt keeps its default attach-and-wrap layout (the collapse only PRESERVES an
+   * author's existing break — see [source-broken-chain-expression-body-stays-on-one-line]).
+   */
+  @Test
+  fun `source-attached-chain-expression-body-keeps-default-attach`() =
+      check(
+          input =
+              """public suspend fun <T> Flow.Publisher<T>.awaitFirstOrNull(): T = FlowAdapters.toPublisher(this).awaitFirstOrNull()""",
+          expected =
+              """public suspend fun <T> Flow.Publisher<T>.awaitFirstOrNull(): T = FlowAdapters.toPublisher(this)
+    .awaitFirstOrNull()""",
+      )
 }

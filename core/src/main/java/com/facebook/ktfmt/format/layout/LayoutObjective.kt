@@ -81,6 +81,18 @@ internal constructor(
      * column-independent, so Pareto-safe.
      */
     val chainIntroducerBreaks: Int,
+    /**
+     * How many completed lines fall INSIDE an introducer's right-hand side — i.e. how far the RHS
+     * itself wraps once the introducer is attached (a split `if/else`, a staircased call chain,
+     * one-argument-per-line). Zero means the RHS sits on a single unbroken line. Ranked just below the
+     * introducer-break counts and ABOVE [lines] in [Objectives.DEFAULT]: when two layouts otherwise
+     * tie, prefer the one that keeps the RHS whole — so a `= <rhs>` that must leave the introducer's
+     * line breaks AFTER the introducer to hold the RHS on one line rather than attaching and wrapping
+     * it (see `brokenFlat` in `KmpAstVisitor.emitIntroducerRhs`). Because it counts already-completed
+     * lines, it is monotone and non-increasing in the open-line column, so the Pareto search stays
+     * sound.
+     */
+    val rhsWrapLines: Int,
 )
 
 /**
@@ -128,6 +140,7 @@ object Objectives {
             it.overflowLines,
             it.introducerBreaks,
             it.chainIntroducerBreaks,
+            it.rhsWrapLines,
             it.lines,
             it.deepestIndent)
       }

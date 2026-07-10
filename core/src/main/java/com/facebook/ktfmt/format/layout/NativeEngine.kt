@@ -94,6 +94,16 @@ internal class NAlt(val alts: List<NDoc>) : NDoc()
  */
 internal class NFlat(val child: NDoc) : NDoc()
 
+/**
+ * A layout-transparent marker wrapping an introducer's right-hand side (`= <rhs>`, a named argument's
+ * value, …). It changes nothing about how [child] lays out or renders; it only tags the completed
+ * lines that fall INSIDE the RHS so the objective can count them ([Metrics.rhsWrapLines]). This lets
+ * §1 prefer breaking after the introducer to keep the whole RHS on one clean line over attaching the
+ * introducer and wrapping the RHS internally (a split `if/else`, a staircased chain), whenever both
+ * arrangements otherwise tie — see the `brokenFlat` candidate in [KmpAstVisitor.emitIntroducerRhs].
+ */
+internal class NRhsBody(val child: NDoc) : NDoc()
+
 /** A source leaf — a real token or a comment — with its position, used by [NativeSink] to track
  * token offsets and interleave comments. */
 class SourceLeaf(val start: Int, val end: Int, val text: String, val isComment: Boolean)
@@ -290,6 +300,9 @@ class NativeSink(
 
   /** Append an already-built subtree forced to lay out flat (see [NFlat]). */
   internal fun appendFlatSubtree(node: NDoc) = add(NFlat(node))
+
+  /** Append an already-built introducer RHS subtree, tagging its internal wrap lines (see [NRhsBody]). */
+  internal fun appendRhsBodySubtree(node: NDoc) = add(NRhsBody(node))
 
   /**
    * Emit literal text WITHOUT advancing the source-token cursor. Unlike [token]/`emit`, this does not
@@ -538,6 +551,7 @@ class NativeRenderer(
         // Flat, an alternative uses its flattest candidate (the one that can sit on one line).
         is NAlt -> doc.alts.minOf { flatWidth(it) }
         is NFlat -> flatWidth(doc.child)
+        is NRhsBody -> flatWidth(doc.child)
         is NLevel -> {
           var w = 0
           var sawEolComment = false
@@ -566,6 +580,7 @@ class NativeRenderer(
         // introducer emitAlt, whose attached arm is chosen when flat) does not make this unflattenable.
         is NAlt -> doc.alts.minByOrNull { flatWidth(it) }?.let { containsUnflattenable(it) } ?: false
         is NFlat -> containsUnflattenable(doc.child)
+        is NRhsBody -> containsUnflattenable(doc.child)
         else -> false
       }
 
@@ -622,6 +637,7 @@ class NativeRenderer(
       val lastCol: Int, // end column of the still-open last line
       val introBreaks: Int, // count of taken introducer breaks (RULES §3, see NBreak.introducer)
       val chainIntroBreaks: Int, // count of taken chain-RHS introducer breaks (RULES §3/§7)
+      val rhsWrapLines: Int, // completed lines that fall INSIDE an introducer RHS (see NRhsBody)
       val emit: () -> Unit,
   )
 
@@ -636,6 +652,7 @@ class NativeRenderer(
         deepestIndent = l.deepestIndent,
         introducerBreaks = l.introBreaks,
         chainIntroducerBreaks = l.chainIntroBreaks,
+        rhsWrapLines = l.rhsWrapLines,
     )
   }
 
@@ -688,8 +705,16 @@ class NativeRenderer(
           if (!containsUnflattenable(doc.child)) listOf(fl)
           else listOf(
               Layout(BIG, fl.overLines + 1, fl.overSum + BIG, fl.lines, fl.deepestIndent, fl.lastCol,
-                  fl.introBreaks, fl.chainIntroBreaks, fl.emit))
+                  fl.introBreaks, fl.chainIntroBreaks, fl.rhsWrapLines, fl.emit))
         }
+        // Layout-transparent: lay the child out exactly as-is, but tag the lines that fall inside
+        // the RHS (its completed lines) so the objective can prefer a single-line RHS (see NRhsBody).
+        is NRhsBody ->
+            layouts(doc.child, startCol, indent).map { c ->
+              Layout(
+                  c.worst, c.overLines, c.overSum, c.lines, c.deepestIndent, c.lastCol,
+                  c.introBreaks, c.chainIntroBreaks, c.rhsWrapLines + c.lines, c.emit)
+            }
         is NLevel ->
             memo(doc, startCol, indent) {
               // A level can be flat unless it contains a forced break or a not-last EOL comment
@@ -730,7 +755,8 @@ class NativeRenderer(
         is NComment -> for (a in frontier) next.add(extend(a, a.lastCol) { emitText(k.text) })
         is NLevel,
         is NAlt,
-        is NFlat ->
+        is NFlat,
+        is NRhsBody ->
             for (a in frontier) for (b in layouts(k, a.lastCol, base)) next.add(combine(a, b))
         is NBreak -> {
           // UNIFIED breaks fire together with their level (§4 all-or-nothing); FORCED always fire;
@@ -755,13 +781,13 @@ class NativeRenderer(
   // ---- Layout constructors (compose candidates; their emit thunks chain so render == cost) ------
 
   private fun leaf(lastCol: Int, emit: () -> Unit): Layout =
-      Layout(0, 0, 0, 0, 0, lastCol, 0, 0, emit)
+      Layout(0, 0, 0, 0, 0, lastCol, 0, 0, 0, emit)
 
   /** [a] followed by zero-break content ending at [newLastCol]; carries [a]'s completed lines. */
   private fun extend(a: Layout, newLastCol: Int, emit: () -> Unit): Layout =
       Layout(
           a.worst, a.overLines, a.overSum, a.lines, a.deepestIndent, newLastCol, a.introBreaks,
-          a.chainIntroBreaks) {
+          a.chainIntroBreaks, a.rhsWrapLines) {
             a.emit()
             emit()
           }
@@ -801,7 +827,7 @@ class NativeRenderer(
     for (i in 1 until parts.size - 1) close(parts[i].trimStart().length) // reindented later
     return Layout(
         worst, overLines, overSum, lines, a.deepestIndent, parts.last().trimStart().length,
-        a.introBreaks, a.chainIntroBreaks) {
+        a.introBreaks, a.chainIntroBreaks, a.rhsWrapLines) {
           a.emit()
           emitText(text)
         }
@@ -824,12 +850,13 @@ class NativeRenderer(
         is NLevel -> d.children.forEach { walk(it) }
         is NAlt -> walk(d.alts.minByOrNull { flatWidth(it) }!!)
         is NFlat -> walk(d.child)
+        is NRhsBody -> walk(d.child)
       }
     }
     walk(doc)
     return Layout(
         acc.worst, acc.overLines, acc.overSum, acc.lines, acc.deepestIndent, acc.lastCol,
-        acc.introBreaks, acc.chainIntroBreaks) {
+        acc.introBreaks, acc.chainIntroBreaks, acc.rhsWrapLines) {
           appendFlat(doc)
         }
   }
@@ -845,6 +872,7 @@ class NativeRenderer(
           lastCol = b.lastCol,
           introBreaks = a.introBreaks + b.introBreaks,
           chainIntroBreaks = a.chainIntroBreaks + b.chainIntroBreaks,
+          rhsWrapLines = a.rhsWrapLines + b.rhsWrapLines,
           emit = { a.emit(); b.emit() },
       )
 
@@ -865,6 +893,7 @@ class NativeRenderer(
         lastCol = newIndent,
         introBreaks = a.introBreaks + (if (brk.introducer) 1 else 0),
         chainIntroBreaks = a.chainIntroBreaks + (if (brk.chainIntroducer) 1 else 0),
+        rhsWrapLines = a.rhsWrapLines,
         emit = {
           a.emit()
           if (brk.tag != null) taken[brk.tag] = true
@@ -878,7 +907,7 @@ class NativeRenderer(
   private fun breakNotTaken(a: Layout, brk: NBreak): Layout =
       Layout(
           a.worst, a.overLines, a.overSum, a.lines, a.deepestIndent, a.lastCol + brk.flat.length,
-          a.introBreaks, a.chainIntroBreaks, {
+          a.introBreaks, a.chainIntroBreaks, a.rhsWrapLines, {
             a.emit()
             if (brk.tag != null) taken[brk.tag] = false
             emitText(brk.flat)
@@ -907,6 +936,7 @@ class NativeRenderer(
             a.deepestIndent <= b.deepestIndent &&
             a.introBreaks <= b.introBreaks &&
             a.chainIntroBreaks <= b.chainIntroBreaks &&
+            a.rhsWrapLines <= b.rhsWrapLines &&
             a.lastCol <= b.lastCol) {
           val strict =
               a.worst < b.worst ||
@@ -916,6 +946,7 @@ class NativeRenderer(
                   a.deepestIndent < b.deepestIndent ||
                   a.introBreaks < b.introBreaks ||
                   a.chainIntroBreaks < b.chainIntroBreaks ||
+                  a.rhsWrapLines < b.rhsWrapLines ||
                   a.lastCol < b.lastCol
           if (strict || i < j) {
             dominated = true
@@ -949,6 +980,7 @@ class NativeRenderer(
       is NLevel -> doc.children.forEach { appendFlat(it) }
       is NAlt -> appendFlat(doc.alts.minByOrNull { flatWidth(it) }!!)
       is NFlat -> appendFlat(doc.child)
+      is NRhsBody -> appendFlat(doc.child)
     }
   }
 }
