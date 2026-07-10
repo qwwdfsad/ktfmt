@@ -1687,6 +1687,95 @@ fun testNoneShortCircuit() = runTest {
       )
 
   /**
+   * §7 author preservation: a member-access chain the author wrote across multiple lines stays
+   * staircased (one `.call` per line) even when it would fit on one line — the break after the
+   * receiver-through-first-call (`Flowable.fromArray(1)` ⏎ `.onBackpressureDrop()`) is preserved rather
+   * than collapsed. (Original: kotlinx.coroutines reactive BackpressureTest.)
+   */
+  @Test
+  fun `author-staircased-chain-is-preserved-even-when-it-fits`() =
+      check(
+          input =
+              """fun testBackpressureDropDirect() = runTest {
+    expect(1)
+    Flowable.fromArray(1)
+        .onBackpressureDrop()
+        .collect {
+            assertEquals(1, it)
+            expect(2)
+        }
+    finish(3)
+}""",
+          expected =
+              """fun testBackpressureDropDirect() = runTest {
+    expect(1)
+    Flowable.fromArray(1)
+        .onBackpressureDrop()
+        .collect {
+            assertEquals(1, it)
+            expect(2)
+        }
+    finish(3)
+}""",
+      )
+
+  /**
+   * §7 author preservation: the same chain with one more link (`.asFlow()`) stays fully staircased —
+   * every subsequent `.call` on its own line, never collapsed onto the receiver line.
+   */
+  @Test
+  fun `author-staircased-chain-with-extra-link-stays-fully-broken`() =
+      check(
+          input =
+              """fun testBackpressureDropFlow() = runTest {
+    expect(1)
+    Flowable.fromArray(1)
+        .onBackpressureDrop()
+        .asFlow()
+        .collect {
+            assertEquals(1, it)
+            expect(2)
+        }
+    finish(3)
+}""",
+          expected =
+              """fun testBackpressureDropFlow() = runTest {
+    expect(1)
+    Flowable.fromArray(1)
+        .onBackpressureDrop()
+        .asFlow()
+        .collect {
+            assertEquals(1, it)
+            expect(2)
+        }
+    finish(3)
+}""",
+      )
+
+  /**
+   * §7: a chain the author wrote on ONE line and which fits stays on one line — the author-preservation
+   * only KEEPS an existing staircase, it does not introduce one (contrast the two tests above).
+   */
+  @Test
+  fun `one-line-chain-that-fits-stays-collapsed`() =
+      check(
+          input =
+              """fun f() {
+    val x = obj.foo(1)
+        .bar(2)
+        .baz(3)
+    val y = obj.foo(1).bar(2).baz(3)
+}""",
+          expected =
+              """fun f() {
+    val x = obj.foo(1)
+        .bar(2)
+        .baz(3)
+    val y = obj.foo(1).bar(2).baz(3)
+}""",
+      )
+
+  /**
    * §3 author-preserving single-line RHS: when the author broke the line right after the introducer
    * and the WHOLE right-hand side fits on that one line, keep it there rather than pulling it back
    * onto the introducer's line and splitting the `if/else`. (Original: kotlinx.coroutines

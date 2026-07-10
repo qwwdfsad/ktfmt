@@ -2407,7 +2407,11 @@ internal class KmpAstVisitor(
     if (isSingleUnnamedLambda) {
       wrapInBlock = true
       breakBeforePostfix = false
-      leadingBreak = !hasEmptyParens && hasTrailingComma
+      // optofmt §5/§14: a hanging block-like sole argument ALWAYS hugs the opener and drops any source
+      // trailing comma, so the comma must NOT force a leading break — otherwise the dropped comma flips
+      // the hug decision on the next pass (non-idempotent). The gjf path keeps ktfmt's comma-driven
+      // expansion of a single lambda argument.
+      leadingBreak = !options.optofmt && !hasEmptyParens && hasTrailingComma
       breakAfterPrefix = false
     } else {
       // optofmt §4: a comma list is compact or fully one-per-line, never half-packed. Keeping the
@@ -2647,6 +2651,46 @@ internal class KmpAstVisitor(
     return code.substring(receiverEnd, firstSelStart).contains('\n')
   }
 
+  /**
+   * True when the source broke the chain right after the receiver-through-first-call — a `\n` before
+   * the FIRST `.member` whose receiver already ends in a call (`Flowable.fromArray(1)` ⏎
+   * `.onBackpressureDrop()`). §7 preserves the author's staircase: when this holds, the chain stays
+   * broken one-`.call`-per-line even if it would fit on one line (the source-based decision keeps every
+   * pass idempotent — a staircased output re-reads as broken, a one-line output re-reads as
+   * collapsible). Only the FIRST subsequent-call boundary is checked, NOT every link: optofmt's own
+   * fill can legitimately break a later lambda-free tail (`…mapNotNull { }.flatten()` attaching while
+   * `.toTypedArray()` wraps), and counting those breaks as author intent would flip the layout on the
+   * next pass. The receiver through its first call is atomic (§7), so a break before it never reaches
+   * here (that is [sourceBreaksAfterChainReceiver], which drops the receiver onto its own line).
+   */
+  private fun sourceBreaksBeforeFirstSubsequentCall(parts: List<KmpNode>): Boolean {
+    for (part in parts) {
+      if (part.type != KtNodeTypes.DOT_QUALIFIED_EXPRESSION &&
+          part.type != KtNodeTypes.SAFE_ACCESS_EXPRESSION)
+          continue
+      val receiver = part.qualifiedReceiver() ?: continue
+      if (!chainReceiverEndsInCall(receiver)) continue
+      val recvEnd = receiver.endOffset
+      val selStart = part.qualifiedSelector()?.startOffset ?: return false
+      if (recvEnd < 0 || recvEnd >= selStart || selStart > code.length) return false
+      return code.substring(recvEnd, selStart).contains('\n')
+    }
+    return false
+  }
+
+  /** True when [node] (a chain receiver) already ends in a call — so the `.member` applied to it is a
+   * *subsequent* call, not part of the atomic receiver-through-first-call (`Flowable.fromArray(1)` ends
+   * in a call; a bare `Flowable` reference does not). */
+  private fun chainReceiverEndsInCall(node: KmpNode): Boolean =
+      when (node.type) {
+        KtNodeTypes.CALL_EXPRESSION -> true
+        KtNodeTypes.DOT_QUALIFIED_EXPRESSION,
+        KtNodeTypes.SAFE_ACCESS_EXPRESSION -> node.qualifiedSelector()?.type == KtNodeTypes.CALL_EXPRESSION
+        KtNodeTypes.POSTFIX_EXPRESSION,
+        KtNodeTypes.ARRAY_ACCESS_EXPRESSION -> true
+        else -> false
+      }
+
   /** A `.call { … }` whose selector carries a trailing lambda. */
   private fun partHasTrailingLambda(part: KmpNode): Boolean =
       part.qualifiedSelector()?.let { sel ->
@@ -2664,6 +2708,29 @@ internal class KmpAstVisitor(
     // ([NFlat]) so it is only viable while the whole chain fits on one line — otherwise it overflows
     // and §1 takes the broken one. (See [emitChainWithHangableTrailingLambda].)
     val soleTrailingLambda = parts.last().isLambdaPart() && parts.count { it.isLambdaPart() } == 1
+    // optofmt §7: the receiver-through-first-call normally stays attached to the introducer line
+    // (`this.foo()` ⏎ `.bar()` ⏎ `.foobar()`). But when the AUTHOR broke the chain across lines,
+    // preserve that staircase EVEN when it would fit on one line: `forceBroken` keeps every subsequent
+    // `.call` on its own line, and `breakReceiverOff` additionally drops the receiver itself onto its
+    // own line (a newline before the FIRST `.call`, so `this` ⏎ `.foo()` ⏎ …). Both are re-read from
+    // the source each pass, so they are idempotent (a one-line chain re-reads as collapsible, a
+    // staircased chain re-reads as broken). Only for a genuine staircase — at least TWO member-access
+    // links (`.foo().bar()`). A single-call chain (`OverrideOrganizations.Override(…)`, one link) is an
+    // atomic receiver-through-first-call that must NOT be split, even if the source wrapped it.
+    val chainLinkCount =
+        parts.count {
+          it.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
+              it.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION
+        }
+    val breakReceiverOff =
+        options.optofmt && chainLinkCount >= 2 && sourceBreaksAfterChainReceiver(parts)
+    // Preserve the staircase when the author broke EITHER the receiver off (`breakReceiverOff`) OR the
+    // first subsequent `.call` onto its own line — both are genuine author intent (never a fill break).
+    val forceBroken =
+        breakReceiverOff ||
+            (options.optofmt &&
+                chainLinkCount >= 2 &&
+                sourceBreaksBeforeFirstSubsequentCall(parts))
     // §7: a chain whose base receiver is ITSELF a trailing-lambda call (`flow { … }.none { … }`,
     // `buildList { … }.map { … }`) with a SOLE trailing-lambda tail applied directly to it is the same
     // "sole trailing-lambda tail on the receiver-through-first-call" shape as `merge(args).collect { … }`
@@ -2674,29 +2741,12 @@ internal class KmpAstVisitor(
     // candidate path, which renders the receiver's body at one indent and lets §1 attach the tail.
     if (options.optofmt &&
         (soleTrailingLambda || isBaseCallWithSoleTrailingLambdaTail(expression))) {
-      emitChainWithHangableTrailingLambda(parts)
+      emitChainWithHangableTrailingLambda(parts, forceBroken, breakReceiverOff)
       return
     }
     // The gjf (non-optofmt) path keeps its block-like trailing lambda; optofmt non-sole-lambda chains
     // never hang (each `.call` on its own line, §7).
     val useBlockLikeLambdaStyle = soleTrailingLambda && !options.optofmt
-    // optofmt §7: the receiver-through-first-call normally stays attached to the introducer line
-    // (`this.foo()` ⏎ `.bar()` ⏎ `.foobar()`). But when the AUTHOR wrote the receiver on its own line —
-    // a newline before the first `.call` — preserve that: the receiver sits alone and EVERY `.call`,
-    // including the first, goes on its own line at one indent (`this` ⏎ `.foo()` ⏎ `.bar()` ⏎ …). Both
-    // forms are legal; the choice is re-read from the source each pass, so it is idempotent (and a chain
-    // short enough to fit still collapses to one line either way). Suppressing the grouping makes each
-    // `.call` take a UNIFIED break that fires when the chain wraps.
-    // Only for a genuine staircase — at least TWO member-access links (`.foo().bar()`). A single-call
-    // chain (`OverrideOrganizations.Override(…)`, one link) is an atomic receiver-through-first-call
-    // that must NOT be split, even if the source wrapped it (`Receiver` ⏎ `.method(…)`).
-    val chainLinkCount =
-        parts.count {
-          it.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
-              it.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION
-        }
-    val breakReceiverOff =
-        options.optofmt && chainLinkCount >= 2 && sourceBreaksAfterChainReceiver(parts)
     val groupingInfos =
         computeGroupingInfo(
             parts, useBlockLikeLambdaStyle, suppressReceiverGrouping = breakReceiverOff)
@@ -2721,7 +2771,7 @@ internal class KmpAstVisitor(
     block(expressionBreakIndent) {
       emitChainParts(
           parts, groupingInfos, groupedLambdaEnd, genSym(), useBlockLikeLambdaStyle,
-          skipLastLambdaBody = false, forceBreaks = false, flatIntroArgs = options.optofmt)
+          skipLastLambdaBody = false, forceBreaks = forceBroken, flatIntroArgs = options.optofmt)
     }
   }
 
@@ -2732,10 +2782,21 @@ internal class KmpAstVisitor(
    * candidate wraps its preamble in [NFlat] so it is only viable while the whole chain fits on one
    * line; a wrapping chain makes it overflow and §1 falls to the broken candidate. This replaces the
    * old `useBlockLikeLambdaStyle`/`parts.size==2` heuristics with a single principled choice.
+   *
+   * §7 author preservation: when [forceBroken] (the source broke the chain across lines) only the
+   * BROKEN staircase is emitted — the HANG/ATTACH candidate is skipped so the author's multi-line chain
+   * is kept even if it would fit on one line. [breakReceiverOff] (a newline before the FIRST `.call`)
+   * additionally drops the receiver onto its own line.
    */
-  private fun emitChainWithHangableTrailingLambda(parts: List<KmpNode>) {
+  private fun emitChainWithHangableTrailingLambda(
+      parts: List<KmpNode>,
+      forceBroken: Boolean = false,
+      breakReceiverOff: Boolean = false,
+  ) {
     val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
-    val groupingInfos = computeGroupingInfo(parts, useBlockLikeLambdaStyle = false)
+    val groupingInfos =
+        computeGroupingInfo(
+            parts, useBlockLikeLambdaStyle = false, suppressReceiverGrouping = breakReceiverOff)
     val trailingSelector = parts.last().qualifiedSelector()
     val lambda =
         trailingSelector?.meaningfulChildren()?.firstOrNull { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
@@ -2802,7 +2863,7 @@ internal class KmpAstVisitor(
               sink.appendSubtree(tail)
             }
           }
-      sink.emitAlt(listOf(attach, broken))
+      if (forceBroken) sink.appendSubtree(broken) else sink.emitAlt(listOf(attach, broken))
       return
     }
 
@@ -2840,7 +2901,7 @@ internal class KmpAstVisitor(
             sink.appendSubtree(body)
           }
         }
-    sink.emitAlt(listOf(hang, broken))
+    if (forceBroken) sink.appendSubtree(broken) else sink.emitAlt(listOf(hang, broken))
   }
 
   /** Emit the parts of a call chain into the current level (breaks + grouping + call elements). With
