@@ -2252,6 +2252,25 @@ internal class KmpAstVisitor(
     return innerArgs.meaningfulChildren().any { it.type == KtNodeTypes.VALUE_ARGUMENT }
   }
 
+  /**
+   * §7: a two-link chain `base { … }.tail { … }` whose base receiver is ITSELF a trailing-lambda call
+   * (`flow { … }`, `buildList { … }`) and whose sole tail is a trailing-lambda call applied directly to
+   * it (`.none { … }`, `.map { … }`). Such a chain is emitted with the tail hugging the base's `}` (see
+   * [emitChainWithHangableTrailingLambda]); as a call's SOLE argument it is block-like and hangs off the
+   * call opener (§5), just like a bare lambda or a scoping-function call.
+   */
+  private fun isBaseCallWithSoleTrailingLambdaTail(node: KmpNode?): Boolean {
+    if (node == null) return false
+    if (node.type != KtNodeTypes.DOT_QUALIFIED_EXPRESSION &&
+        node.type != KtNodeTypes.SAFE_ACCESS_EXPRESSION)
+        return false
+    val parts = breakIntoParts(node)
+    return parts.size == 2 &&
+        parts[0].type == KtNodeTypes.CALL_EXPRESSION &&
+        parts[0].isLambdaPart() &&
+        parts.last().isLambdaPart()
+  }
+
   /** True when [args]'s final argument is an unnamed lambda and there is at least one arg before
    * it — the shape optofmt §4 expands in place. */
   private fun isLastArgUnnamedLambda(args: List<KmpNode>): Boolean {
@@ -2375,7 +2394,11 @@ internal class KmpAstVisitor(
             (soleArgExpr.type == KtNodeTypes.LAMBDA_EXPRESSION ||
                 (options.optofmt &&
                     (isLambdaOrScopingFunction(soleArgExpr) ||
-                        soleArgExpr.type == KtNodeTypes.OBJECT_LITERAL)))
+                        soleArgExpr.type == KtNodeTypes.OBJECT_LITERAL ||
+                        // §5/§7: a chain `flow { … }.none { … }` (a base trailing-lambda call plus a sole
+                        // trailing-lambda tail) is block-like — hang it off the opener (`assertFalse(flow {`
+                        // … `})`) instead of pushing it onto its own line.
+                        isBaseCallWithSoleTrailingLambdaTail(soleArgExpr))))
 
     val wrapInBlock: Boolean
     val breakBeforePostfix: Boolean
@@ -2641,7 +2664,16 @@ internal class KmpAstVisitor(
     // ([NFlat]) so it is only viable while the whole chain fits on one line — otherwise it overflows
     // and §1 takes the broken one. (See [emitChainWithHangableTrailingLambda].)
     val soleTrailingLambda = parts.last().isLambdaPart() && parts.count { it.isLambdaPart() } == 1
-    if (options.optofmt && soleTrailingLambda) {
+    // §7: a chain whose base receiver is ITSELF a trailing-lambda call (`flow { … }.none { … }`,
+    // `buildList { … }.map { … }`) with a SOLE trailing-lambda tail applied directly to it is the same
+    // "sole trailing-lambda tail on the receiver-through-first-call" shape as `merge(args).collect { … }`
+    // — the tail must hug the receiver's `}` and the receiver's own body sits one indent below (not two).
+    // The general path below can't attach it: its `groupedLambdaEnd` only recognizes a DOT-qualified
+    // first call (`v.mapValues { … }.filterValues { … }`, base = a *reference*), not a base call, so the
+    // tail drops onto its own line and the base body drifts a level. Route it through the attach/broken
+    // candidate path, which renders the receiver's body at one indent and lets §1 attach the tail.
+    if (options.optofmt &&
+        (soleTrailingLambda || isBaseCallWithSoleTrailingLambdaTail(expression))) {
       emitChainWithHangableTrailingLambda(parts)
       return
     }

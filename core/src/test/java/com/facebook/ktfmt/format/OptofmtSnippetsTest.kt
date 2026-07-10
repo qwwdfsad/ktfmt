@@ -1628,6 +1628,65 @@ internal val pendingInitializationLambdas = IdentityHashMap<Entity<Any>, Mutable
       )
 
   /**
+   * §7: a chain whose base receiver is ITSELF a trailing-lambda call (`flow { … }`) with a SOLE
+   * trailing-lambda tail applied directly to it (`.none { … }`) keeps the tail ATTACHED to the base's
+   * `}` (`}.none {`) and its own body at one indent — it does not drop `.none` onto its own line nor
+   * drift the base body to a second indent. This is the same shape as `v.mapValues { … }.filterValues
+   * { … }` (see `sole-trailing-lambda-tail-after-grouped-lambda-call-attaches`), but here the base is a
+   * bare call rather than a `receiver.call`.
+   */
+  @Test
+  fun `chain-with-base-call-and-sole-trailing-lambda-tail-attaches`() =
+      check(
+          input =
+              """fun f() {
+    val x = flow {
+        emit(1)
+        emit(2)
+    }.none { it == 2 }
+}""",
+          expected =
+              """fun f() {
+    val x = flow {
+        emit(1)
+        emit(2)
+    }.none { it == 2 }
+}""",
+      )
+
+  /**
+   * §5/§7: when such a chain (`flow { … }.none { … }`) is a call's SOLE argument, it is block-like and
+   * hangs off the call opener (`assertFalse(flow {` … `})`) instead of being pushed onto its own line
+   * with a leading `(` break and a trailing comma. (Original: a kotlinx.coroutines flow test.)
+   */
+  @Test
+  fun `sole-block-like-chain-argument-hugs-call-opener`() =
+      check(
+          input =
+              """@Test
+fun testNoneShortCircuit() = runTest {
+    assertFalse(flow {
+        emit(1)
+        emit(2)
+        expectUnreached()
+    }.none {
+        it == 2
+    })
+}""",
+          expected =
+              """@Test
+fun testNoneShortCircuit() = runTest {
+    assertFalse(flow {
+        emit(1)
+        emit(2)
+        expectUnreached()
+    }.none {
+        it == 2
+    })
+}""",
+      )
+
+  /**
    * §3 author-preserving single-line RHS: when the author broke the line right after the introducer
    * and the WHOLE right-hand side fits on that one line, keep it there rather than pulling it back
    * onto the introducer's line and splitting the `if/else`. (Original: kotlinx.coroutines
