@@ -3061,6 +3061,23 @@ internal class KmpAstVisitor(
             } else {
               visit(part)
             }
+        // §2/§7: a chain base receiver that is ITSELF a call (`flowOf(a, b, c).map { … }.toList()`)
+        // sits on the introducer line. When its OWN arguments wrap, they must land ONE level below the
+        // introducer (and its `)` at the introducer column), not a second level in — the enclosing
+        // chain block already supplies +1, so emit the base call at a compensating negative indent
+        // (like OBJECT_LITERAL above). Its subsequent `.call`s still wrap at the chain's single indent.
+        // A base call that carries a TRAILING LAMBDA (`combine(args) { … }.stateIn(…)`) is excluded:
+        // there the `) {` opener/`}` closer anchor at the chain's single indent and the lambda body
+        // (and the value args, to match it) hang one level below that — do NOT compensate those.
+        KtNodeTypes.CALL_EXPRESSION ->
+            if (options.optofmt &&
+                index == 0 &&
+                parts.size > 1 &&
+                part.meaningfulChildren().none { it.type == KtNodeTypes.LAMBDA_ARGUMENT }) {
+              block(expressionBreakNegativeIndent) { visit(part) }
+            } else {
+              visit(part)
+            }
         else -> visit(part)
       }
     }

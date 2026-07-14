@@ -1809,6 +1809,85 @@ fun testNoneShortCircuit() = runTest {
       )
 
   /**
+   * §2/§7: a call chain whose BASE receiver is itself a call that wraps its own arguments
+   * (`flowOf(a, b, c).map { … }.toList()`) keeps those arguments at a SINGLE indent below the base
+   * call line and closes its `)` at the base-call column — not a second level in. The enclosing chain
+   * block supplies the one continuation indent, so the base call is emitted at a compensating negative
+   * indent; the subsequent `.call`s wrap at that same single indent. Regression: the base call's args
+   * drifted a second level deep (chain block + arg list) and its `)` sat at the chain-step column.
+   */
+  @Test
+  fun `chain-with-wrapping-base-call-keeps-args-single-indent`() =
+      check(
+          input =
+              """object AfterFirstOkTest {
+    @Test
+    fun simple() {
+        TestData.run {
+            val r = runBlocking {
+                flowOf(
+                    InfoUpdate(info),
+                    RunUpdate(RunInfo("1".toRunId(), RunResult.ICPC(Verdict.Accepted), problemIdA, teamId1, 10.minutes, null)),
+                    RunUpdate(RunInfo("2".toRunId(), RunResult.InProgress(1.0), problemIdA, teamId1, 11.minutes, null)),
+                )
+                    .markSubmissionAfterFirstOk()
+                    .filterIsInstance<RunUpdate>()
+                    .map {
+                        when (val r = it.newInfo.result) {
+                            is RunResult.ICPC -> r.isAfterFirstOk
+                            is RunResult.IOI -> false
+                            is RunResult.InProgress -> r.isAfterFirstOk
+                        }
+                    }
+                    .toList()
+            }
+            assertEquals(listOf(false, true), r)
+        }
+    }
+}""",
+          expected =
+              """object AfterFirstOkTest {
+    @Test
+    fun simple() {
+        TestData.run {
+            val r = runBlocking {
+                flowOf(
+                    InfoUpdate(info),
+                    RunUpdate(RunInfo(
+                        "1".toRunId(),
+                        RunResult.ICPC(Verdict.Accepted),
+                        problemIdA,
+                        teamId1,
+                        10.minutes,
+                        null,
+                    )),
+                    RunUpdate(RunInfo(
+                        "2".toRunId(),
+                        RunResult.InProgress(1.0),
+                        problemIdA,
+                        teamId1,
+                        11.minutes,
+                        null,
+                    )),
+                )
+                    .markSubmissionAfterFirstOk()
+                    .filterIsInstance<RunUpdate>()
+                    .map {
+                        when (val r = it.newInfo.result) {
+                            is RunResult.ICPC -> r.isAfterFirstOk
+                            is RunResult.IOI -> false
+                            is RunResult.InProgress -> r.isAfterFirstOk
+                        }
+                    }
+                    .toList()
+            }
+            assertEquals(listOf(false, true), r)
+        }
+    }
+}""",
+      )
+
+  /**
    * The single-line-RHS collapse is NOT forced: when the author wrote the RHS attached to the
    * introducer, optofmt keeps its default attach-and-wrap layout (the collapse only PRESERVES an
    * author's existing break — see [source-broken-chain-expression-body-stays-on-one-line]).
