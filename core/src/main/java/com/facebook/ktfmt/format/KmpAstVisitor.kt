@@ -3166,11 +3166,16 @@ internal class KmpAstVisitor(
           // a one-line source (not force-broken) staircases per default §7, so a tail with no source
           // newline there is NOT a hug intent — it's just the whole chain on one line.
           builder.breakOp(FillMode.INDEPENDENT, "", ZERO)
-        } else if (forceBreaks && !groupingInfos[index].shouldCloseGroup) {
+        } else if (forceBreaks &&
+            !groupingInfos[index].shouldCloseGroup &&
+            !soleTrailingLambdaTail) {
           // §7: force every subsequent `.call` onto its own line (the receiver-through-first-call
           // stays grouped, so its break is not forced). Marked chain-structural so it is suppressed
           // when this preamble is laid out flat inside an [NFlat] hang candidate — see
-          // [emitChainWithHangableTrailingLambda].
+          // [emitChainWithHangableTrailingLambda]. A sole trailing-lambda tail is EXCLUDED: its
+          // canonical §5/§7 form hugs the grouped lambda's `}` (`}.map {`), so it falls through to the
+          // fill-break hug below even when the author staircased it in source (idempotent — the hugged
+          // output re-reads as hugged).
           (builder as com.facebook.ktfmt.format.layout.NativeSink).forcedChainStructuralBreak(ZERO)
         } else if (index > groupedLambdaEnd &&
             groupedLambdaEnd >= 0 &&
@@ -3205,6 +3210,12 @@ internal class KmpAstVisitor(
             // indent). It can't be an `Indent.If` on [nameTag] — the native engine evaluates a level's
             // indent at cost time, before the `.call` break that sets [nameTag] is walked.
             val midChainLambdaGrouped = index == groupedLambdaEnd
+            // §5/§7: a sole trailing-lambda tail hugs the grouped lambda's `}` on the receiver's line
+            // (`}.map { … }`), so — exactly like [midChainLambdaGrouped] — its own body must cancel the
+            // enclosing chain block's +1 (a constant, since the fill-break hug carries no [nameTag] the
+            // native engine could resolve at cost time). Without this the hugged body drifts to +2.
+            val soleTrailingLambdaTailHugs =
+                isLast && index == groupedLambdaEnd + 1 && partHasTrailingLambda(part)
             // The last call's own argument list indents one level below the call — EXCEPT when the
             // last call is the grouped receiver-through-first-call (`receiver.method(args)`), which
             // sits on the introducer line, so its args land at the chain's single indent (ZERO extra).
@@ -3240,7 +3251,8 @@ internal class KmpAstVisitor(
                     lambdaArguments = lambdaArguments,
                     argumentsIndent = Indent.If.make(nameTag, expressionBreakIndent, argsIndentElse),
                     lambdaIndent =
-                        if (midChainLambdaGrouped) expressionBreakNegativeIndent
+                        if (midChainLambdaGrouped || soleTrailingLambdaTailHugs)
+                            expressionBreakNegativeIndent
                         else Indent.If.make(nameTag, ZERO, lambdaIndentElse),
                     negativeLambdaIndent = Indent.If.make(nameTag, ZERO, negLambdaIndentElse),
                     collapseNegateIndent = Indent.If.make(nameTag, ZERO, collapseNegateIndentElse),

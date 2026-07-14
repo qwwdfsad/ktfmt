@@ -585,17 +585,52 @@ class NativeRenderer(
       }
 
   /** Flat width of children[from] up to (not including) the next break — used to decide whether an
-   * INDEPENDENT (fill) break must fire. */
+   * INDEPENDENT (fill) break must fire. A following subtree that breaks internally (a trailing
+   * lambda's own multi-line body) ends the run at ITS first break: only its first physical line sits
+   * on the current line, so we count [firstLineWidth] of it (not its BIG flat width) and stop. Thus a
+   * tail whose header fits (`}.map {`) still hugs even when its lambda body wraps (§5/§7). */
   private fun segmentWidth(children: List<NDoc>, from: Int): Int {
     var w = 0
     var i = from
     while (i < children.size && children[i] !is NBreak) {
-      w += flatWidth(children[i])
+      val fw = flatWidth(children[i])
+      if (fw >= BIG) return w + firstLineWidth(children[i])
+      w += fw
       if (w >= BIG) return BIG
       i++
     }
     return w
   }
+
+  /**
+   * Flat width of [doc]'s FIRST physical line — the content it puts on the current line before its
+   * own first FORCED break, descending into nested levels. Unlike [flatWidth] (which is BIG for any
+   * doc that cannot be a single line), this returns what the doc actually adds to the open line: a
+   * trailing lambda's `{`-header (`.map {`) rather than its whole multi-line body. See [segmentWidth].
+   */
+  private fun firstLineWidth(doc: NDoc): Int =
+      when (doc) {
+        is NText -> if ('\n' in doc.text) doc.text.substringBefore('\n').length else doc.text.length
+        is NComment -> 0
+        is NBlank -> 0
+        is NBreak -> doc.flat.length
+        is NFlat -> firstLineWidth(doc.child)
+        is NRhsBody -> firstLineWidth(doc.child)
+        is NAlt -> doc.alts.minByOrNull { flatWidth(it) }?.let { firstLineWidth(it) } ?: 0
+        is NLevel -> {
+          var w = 0
+          for (c in doc.children) {
+            if (c is NBreak && c.fillMode == FillMode.FORCED) break
+            val cw = flatWidth(c)
+            if (cw >= BIG) {
+              w += firstLineWidth(c)
+              break
+            }
+            w += cw
+          }
+          w
+        }
+      }
 
   // ==============================================================================================
   // RULES §1 — THE LAYOUT OBJECTIVE, by global optimization.

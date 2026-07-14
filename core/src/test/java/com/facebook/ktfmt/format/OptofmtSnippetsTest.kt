@@ -1910,6 +1910,42 @@ internal val pendingInitializationLambdas = IdentityHashMap<Entity<Any>, Mutable
       )
 
   /**
+   * §5/§7: a sole trailing-lambda tail whose OWN lambda body is MULTILINE still hugs the grouped
+   * receiver-first-call's `}` (`}.map {`) — the tail's `{`-header fits on the `}` line, so only its
+   * body wraps below (at ONE indent, not two). This holds even when the author STAIRCASED the tail
+   * onto its own line in source: the hug is the canonical form for this shape. From ICPC-live
+   * CFDataSource.kt:57. Regression: (a) the fill-break run measured the tail's whole (multi-line)
+   * flat width as unbreakably wide and dropped `.map` to its own line; (b) even when hugged, the
+   * body drifted a second indent deep. Contrast `chain-with-single-line-lambda-first-call-...`, where
+   * the receiver-first-call's lambda is single-line so the chain staircases per §7 instead.
+   */
+  @Test
+  fun `sole-trailing-lambda-tail-with-multiline-body-hugs-even-when-source-staircased`() =
+      check(
+          input =
+              """fun f() {
+    val a = DataLoader.json<CFStatusWrapper<CFStandings>>(
+        networkSettings = settings.network,
+    ) {
+        apiRequestUrl("contest.standings")
+    }
+        .map {
+            it.unwrap()
+        }
+}""",
+          expected =
+              """fun f() {
+    val a = DataLoader.json<CFStatusWrapper<CFStandings>>(
+        networkSettings = settings.network,
+    ) {
+        apiRequestUrl("contest.standings")
+    }.map {
+        it.unwrap()
+    }
+}""",
+      )
+
+  /**
    * §7: a chain whose base receiver is ITSELF a trailing-lambda call (`flow { … }`) with a SOLE
    * trailing-lambda tail applied directly to it (`.none { … }`) keeps the tail ATTACHED to the base's
    * `}` (`}.none {`) and its own body at one indent — it does not drop `.none` onto its own line nor
