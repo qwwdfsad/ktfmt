@@ -84,6 +84,60 @@ class OptofmtSnippetsTest {
     ))
 }""")
 
+  /**
+   * §5 (indent economy) on a MEMBER-ACCESS call: `rootClasses.addAll(listOf(…))` collapses the two
+   * openers (`addAll(listOf(`) and stacks the closers (`))`) exactly like a bare `add(OverrideQueue(…))`
+   * — the collapsed body sits at a SINGLE indent below the call line and `))` returns to the call's
+   * column. Regression: the receiver (`rootClasses.`) routed the call through the chain-continuation
+   * block, whose one indent level was left uncompensated in the collapse branch — so the inner call's
+   * own break level doubled it, over-indenting the arguments (and `))`) by a level. From a
+   * build.gradle.kts `tasks.register { rootClasses.addAll(listOf(…)) }` block.
+   */
+  @Test
+  fun `indent-economy-collapse-on-member-access-call`() =
+      check(
+          input =
+              """val generateApiTypeScript = tasks.register<TsInterfaceGeneratorTask>("generateApiTypeScript") {
+    rootClasses.addAll(listOf(
+            "org.icpclive.cds.api.ContestInfo",
+            "org.icpclive.cds.api.RunInfo",
+            "org.icpclive.cds.api.ScoreboardDiff",
+            "org.icpclive.api.MainScreenEvent",
+            "org.icpclive.api.QueueEvent",
+            "org.icpclive.api.AnalyticsEvent",
+            "org.icpclive.api.TickerEvent",
+            "org.icpclive.api.SolutionsStatistic",
+            "org.icpclive.api.ExternalTeamViewSettings",
+            "org.icpclive.api.ObjectSettings",
+            "org.icpclive.api.WidgetUsageStatistics",
+            "org.icpclive.api.TimeLineRunInfo",
+            "org.icpclive.api.AddTeamScoreRequest",
+            "org.icpclive.api.InterestingTeam",
+        ))
+    fileName = "api"
+}""",
+          expected =
+              """val generateApiTypeScript = tasks.register<TsInterfaceGeneratorTask>("generateApiTypeScript") {
+    rootClasses.addAll(listOf(
+        "org.icpclive.cds.api.ContestInfo",
+        "org.icpclive.cds.api.RunInfo",
+        "org.icpclive.cds.api.ScoreboardDiff",
+        "org.icpclive.api.MainScreenEvent",
+        "org.icpclive.api.QueueEvent",
+        "org.icpclive.api.AnalyticsEvent",
+        "org.icpclive.api.TickerEvent",
+        "org.icpclive.api.SolutionsStatistic",
+        "org.icpclive.api.ExternalTeamViewSettings",
+        "org.icpclive.api.ObjectSettings",
+        "org.icpclive.api.WidgetUsageStatistics",
+        "org.icpclive.api.TimeLineRunInfo",
+        "org.icpclive.api.AddTeamScoreRequest",
+        "org.icpclive.api.InterestingTeam",
+    ))
+    fileName = "api"
+}""",
+      )
+
   @Test
   fun `infix-attached`() =
       check(

@@ -2171,6 +2171,15 @@ internal class KmpAstVisitor(
       argumentsIndent: Indent = expressionBreakIndent,
       lambdaIndent: Indent = ZERO,
       negativeLambdaIndent: Indent = ZERO,
+      // §5 (indent economy): when this call collapses a sole call argument (see [collapseSoleCall])
+      // AND it is a chain's grouped receiver-through-first-call sitting on the introducer line
+      // (`rootClasses.addAll(listOf(` …)), the enclosing chain's continuation block already supplies
+      // the one body indent the collapse needs — so the inner call's own break level would double it.
+      // The chain passes a compensating negative indent (see [emitChainParts]) applied only in the
+      // collapse branch, cancelling the chain block so the collapsed body lands at a single level (and
+      // the stacked closers `))` at the introducer column). A bare call has no chain block, so it
+      // defaults to ZERO and the collapse indents from the inner call's parens alone.
+      collapseNegateIndent: Indent = ZERO,
   ) {
     // optofmt §5 (indent economy): when this call's only argument is itself a call that must wrap,
     // collapse the two openers onto one line and stack the closers (`add(OverrideQueue(` … `))`),
@@ -2191,9 +2200,18 @@ internal class KmpAstVisitor(
         visit(callee)
         block(effectiveArgumentsIndent) {
           if (typeArgumentList != null) block(ZERO) { visit(typeArgumentList) }
-          if (argumentList != null)
-              brokeBeforeBrace =
-                  visitValueArgumentListInternal(argumentList, transparent = collapseSoleCall)
+          if (argumentList != null) {
+            if (collapseSoleCall) {
+              // Cancel the enclosing chain block for an on-introducer-line collapse (see
+              // [collapseNegateIndent]); the extra level is added ONLY here so the non-collapse (and
+              // gjf) paths keep their exact original grouping.
+              block(collapseNegateIndent) {
+                brokeBeforeBrace = visitValueArgumentListInternal(argumentList, transparent = true)
+              }
+            } else {
+              brokeBeforeBrace = visitValueArgumentListInternal(argumentList, transparent = false)
+            }
+          }
         }
       }
       if (lambdaArguments.size > 1) {
@@ -3015,6 +3033,17 @@ internal class KmpAstVisitor(
                 } else expressionBreakIndent
             val lambdaIndentElse = if (isTrailingLambda) expressionBreakNegativeIndent else ZERO
             val negLambdaIndentElse = if (isTrailingLambda) expressionBreakIndent else ZERO
+            // §5: when this call collapses a sole call argument and it is the grouped
+            // receiver-through-first-call ON the introducer line (`rootClasses.addAll(listOf(` …)),
+            // the enclosing chain block already supplies the one body indent — so cancel it in the
+            // collapse branch (the inner call's parens then supply the single level). When the group
+            // instead broke (nameTag fired, the call on its OWN line) the chain +1 IS the call's line
+            // indent, so no compensation; a broken subsequent call (not shouldCloseGroup) likewise
+            // keeps ZERO.
+            val collapseNegateIndentElse =
+                if (options.optofmt && groupingInfos[index].shouldCloseGroup)
+                    expressionBreakNegativeIndent
+                else ZERO
             fun emitCall() =
                 visitCallElement(
                     callee = null,
@@ -3026,6 +3055,7 @@ internal class KmpAstVisitor(
                         if (midChainLambdaGrouped) expressionBreakNegativeIndent
                         else Indent.If.make(nameTag, ZERO, lambdaIndentElse),
                     negativeLambdaIndent = Indent.If.make(nameTag, ZERO, negLambdaIndentElse),
+                    collapseNegateIndent = Indent.If.make(nameTag, ZERO, collapseNegateIndentElse),
                 )
             // §7: hold the grouped receiver-through-first-call's own args flat (see [flatIntroArgs]) —
             // only that call (shouldCloseGroup), only when a TAIL follows it (so the flat-fits decision
