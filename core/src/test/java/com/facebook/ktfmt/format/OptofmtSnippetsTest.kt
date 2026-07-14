@@ -122,6 +122,58 @@ class OptofmtSnippetsTest {
 }""",
       )
 
+  /**
+   * §4 vs §5: a SOLE call argument that is a `receiver.method { … }` chain whose lambda body is a
+   * SINGLE expression is NOT block-like — it full-splits onto its own line with `)` on its own line,
+   * rather than hanging the chain off the opener (which would split the chain receiver onto the
+   * opener line and dangle `})`: `OverrideTeams(teams` ⏎ `.associateWith { … })`). From live-v3
+   * AddGroupToTeams.kt:27. Regression: `isLambdaOrScopingFunction` classified any `receiver.method
+   * { … }` as a hangable block regardless of whether its body was a real multi-line block.
+   */
+  @Test
+  fun `sole-arg-chain-with-single-expr-lambda-full-splits-not-hangs`() =
+      check(
+          input =
+              """class C {
+    fun desugar(): TuningRule {
+        return OverrideTeams(teams.associateWith { OverrideTeams.Override(extraGroups = listOf(id)) })
+    }
+}""",
+          expected =
+              """class C {
+    fun desugar(): TuningRule {
+        return OverrideTeams(
+            teams.associateWith { OverrideTeams.Override(extraGroups = listOf(id)) },
+        )
+    }
+}""",
+      )
+
+  /**
+   * §5 boundary companion to [sole-arg-chain-with-single-expr-lambda-full-splits-not-hangs]: when the
+   * scoping/chain sole argument's lambda body IS a genuine multi-statement block, it still hangs off
+   * the call opener (the block has something to hang), keeping the body at a single indent.
+   */
+  @Test
+  fun `sole-arg-scoping-lambda-with-block-body-still-hangs`() =
+      check(
+          input =
+              """class C {
+    fun f() {
+        return computeResultFromInput(someInputValue.let { transformed -> transformed.doFirstThing(); transformed.doSecondThing() })
+    }
+}""",
+          expected =
+              """class C {
+    fun f() {
+        return computeResultFromInput(someInputValue.let { transformed ->
+            transformed.doFirstThing()
+            transformed.doSecondThing()
+        })
+    }
+}""",
+      )
+
   @Test
   fun `indent-economy`() =
       check(

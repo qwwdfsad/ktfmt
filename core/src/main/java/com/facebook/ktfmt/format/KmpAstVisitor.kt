@@ -2282,6 +2282,38 @@ internal class KmpAstVisitor(
    * [emitChainWithHangableTrailingLambda]); as a call's SOLE argument it is block-like and hangs off the
    * call opener (§5), just like a bare lambda or a scoping-function call.
    */
+  /**
+   * §4/§5: the number of statements in the trailing-lambda body of a scoping/chain expression
+   * (`x.let { … }`, `teams.associateWith { … }`, `run { … }`). Used to decide whether such a SOLE
+   * call argument is genuinely block-like: a body with ≥2 statements renders as a multi-line block
+   * worth hanging off the call opener (§5); a single-expression body stays inline, so "hanging" it
+   * degenerates to splitting the chain receiver onto the opener line with a dangling `)` — such an
+   * argument should full-split per §4 (its own line, `)` on its own line) instead. Returns 0 when
+   * [node] is not a scoping/chain trailing-lambda shape.
+   */
+  private fun scopingLambdaBodyStatementCount(node: KmpNode?): Int {
+    var carry = node ?: return 0
+    if ((carry.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
+        carry.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) &&
+        carry.qualifiedReceiver()?.type == KtNodeTypes.REFERENCE_EXPRESSION) {
+      carry = carry.qualifiedSelector() ?: return 0
+    }
+    if (carry.type == KtNodeTypes.CALL_EXPRESSION) {
+      carry =
+          carry.meaningfulChildren().firstOrNull { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
+              ?.argumentExpression() ?: return 0
+    }
+    if (carry.type == KtNodeTypes.LABELED_EXPRESSION) {
+      carry = carry.meaningfulChildren().lastOrNull { it.type != KtNodeTypes.LABEL_QUALIFIER } ?: return 0
+    }
+    if (carry.type != KtNodeTypes.LAMBDA_EXPRESSION) return 0
+    val functionLiteral = carry.child(KtNodeTypes.FUNCTION_LITERAL) ?: return 0
+    val block = functionLiteral.meaningfulChildren().firstOrNull { it.type == KtNodeTypes.BLOCK } ?: return 0
+    return block.meaningfulChildren().count {
+      it.type != KtTokens.LBRACE && it.type != KtTokens.RBRACE && it.type != KtTokens.SEMICOLON
+    }
+  }
+
   private fun isBaseCallWithSoleTrailingLambdaTail(node: KmpNode?): Boolean {
     if (node == null) return false
     if (node.type != KtNodeTypes.DOT_QUALIFIED_EXPRESSION &&
@@ -2416,12 +2448,19 @@ internal class KmpAstVisitor(
         soleArgExpr != null &&
             (soleArgExpr.type == KtNodeTypes.LAMBDA_EXPRESSION ||
                 (options.optofmt &&
-                    (isLambdaOrScopingFunction(soleArgExpr) ||
-                        soleArgExpr.type == KtNodeTypes.OBJECT_LITERAL ||
+                    (soleArgExpr.type == KtNodeTypes.OBJECT_LITERAL ||
                         // §5/§7: a chain `flow { … }.none { … }` (a base trailing-lambda call plus a sole
                         // trailing-lambda tail) is block-like — hang it off the opener (`assertFalse(flow {`
                         // … `})`) instead of pushing it onto its own line.
-                        isBaseCallWithSoleTrailingLambdaTail(soleArgExpr))))
+                        isBaseCallWithSoleTrailingLambdaTail(soleArgExpr) ||
+                        // §5 vs §4: a scoping/chain trailing-lambda call (`x.let { … }`, `run { … }`,
+                        // `teams.associateWith { … }`) hangs off the opener ONLY when its body is a
+                        // genuine multi-statement block. A single-expression body stays inline, so
+                        // "hanging" it would split the chain receiver onto the opener line and dangle a
+                        // hugging `)` (`OverrideTeams(teams` ⏎ `.associateWith { … })`) — such an
+                        // argument full-splits per §4 instead (its own line, `)` on its own line).
+                        (isLambdaOrScopingFunction(soleArgExpr) &&
+                            scopingLambdaBodyStatementCount(soleArgExpr) >= 2))))
 
     val wrapInBlock: Boolean
     val breakBeforePostfix: Boolean
