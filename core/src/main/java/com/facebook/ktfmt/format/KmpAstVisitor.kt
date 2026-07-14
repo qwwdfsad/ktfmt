@@ -2796,6 +2796,36 @@ internal class KmpAstVisitor(
       } == true
 
   /**
+   * §5/§7: true when [part]'s trailing lambda will render across multiple physical lines — its body
+   * has more than one statement, or a single statement that itself spans lines (a nested multi-
+   * statement / `;`-separated / hand-broken block, e.g. `{ runBlocking { a(); b() } }`). Only such a
+   * lambda leaves a closing `}` on its own line for a following lambda-free tail to hug (the block-
+   * body economy of [emitQualifiedExpression]'s `groupedLambdaEnd`). A single-line lambda
+   * (`{ it.exists() }`) produces no such `}`; a chain that breaks purely for length must then
+   * staircase each subsequent `.call` onto its own line per §7, not pack them onto the intro line.
+   */
+  private fun partLambdaRendersMultiline(part: KmpNode): Boolean {
+    val call =
+        part.qualifiedSelector()?.takeIf { it.type == KtNodeTypes.CALL_EXPRESSION } ?: return false
+    val lambda =
+        call.meaningfulChildren()
+            .firstOrNull { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
+            ?.argumentExpression() ?: return false
+    val functionLiteral = lambda.child(KtNodeTypes.FUNCTION_LITERAL) ?: return false
+    val block = functionLiteral.child(KtNodeTypes.BLOCK) ?: return false
+    val statements =
+        block.meaningfulChildren().filter {
+          it.type != KtTokens.LBRACE &&
+              it.type != KtTokens.RBRACE &&
+              it.type != KtTokens.SEMICOLON
+        }
+    if (statements.size != 1) return statements.isNotEmpty()
+    return functionLiteral.descendants().any {
+      (it.type in KtTokens.WHITESPACES && it.text.contains('\n')) || it.type == KtTokens.SEMICOLON
+    }
+  }
+
+  /**
    * §5/§7: true when `parts[index]` is a lambda-free `.call()`/`.property` tail (`.toList()`, `.size`,
    * `.first()`) whose immediately preceding part carries a trailing lambda (`… .map { … }`). Such a
    * tail MAY hug the lambda's closing `}` (`}.toList()`) — see [sourceBreaksBeforeSelector], which
@@ -2911,7 +2941,11 @@ internal class KmpAstVisitor(
                   part.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) &&
                   index != parts.size - 1 &&
                   groupingInfos[index].shouldCloseGroup &&
-                  partHasTrailingLambda(part)
+                  partHasTrailingLambda(part) &&
+                  // Only a lambda that actually renders multiline anchors the `}`-hug; a single-line
+                  // lambda call (`.takeIf { it.exists() }`) does not, so a chain that breaks for
+                  // length staircases its subsequent `.call`s per §7 instead of hugging them.
+                  partLambdaRendersMultiline(part)
             } ?: -1
     block(expressionBreakIndent) {
       emitChainParts(

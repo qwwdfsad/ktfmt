@@ -664,6 +664,34 @@ public fun Flow<ContestUpdate>.addComputedData(configure: ComputedDataConfig.() 
       )
 
   /**
+   * §7: a chain that breaks purely for length, whose receiver-through-first-call carries a SINGLE-
+   * LINE trailing lambda (`file.takeIf { it.exists() }`), staircases each subsequent `.call` onto
+   * its own line — it does NOT keep the lambda-free `?.inputStream()` packed on the intro line. The
+   * `}`-hug economy (see [chain-lambda-free-tail-hugs-closing-brace-when-author-hugged-it]) applies
+   * only when the grouped lambda actually renders multiline, leaving a `}` on its own line to hug;
+   * a single-line lambda leaves no such brace. From ICPC-live Users.kt:49. Regression: `?.inputStream()`
+   * used to hug `.takeIf { it.exists() }` on the first line while only `?.use` broke.
+   */
+  @Test
+  fun `chain-with-single-line-lambda-first-call-staircases-subsequent-calls`() =
+      check(
+          input =
+              """fun f() {
+    file.takeIf { it.exists() }?.inputStream()?.use {
+        Json.decodeFromStream<List<User>>(it).associateByTo(users, User::name)
+    }
+}""",
+          expected =
+              """fun f() {
+    file.takeIf { it.exists() }
+        ?.inputStream()
+        ?.use {
+            Json.decodeFromStream<List<User>>(it).associateByTo(users, User::name)
+        }
+}""",
+      )
+
+  /**
    * §7 with a lowercase receiver: the receiver-through-first-call stays on the introducer's line
    * regardless of the receiver's name/casing, then each subsequent `.step` wraps to its own line.
    * Matches report.md's `chain-lambda-steps`. Regression: the receiver `repository` was being
