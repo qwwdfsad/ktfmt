@@ -486,6 +486,38 @@ public fun Flow<ContestUpdate>.addComputedData(configure: ComputedDataConfig.() 
   }
 
   /**
+   * §7: the author broke the chain off before its first `.call`, but across a leading property run
+   * (`users.users`) that stays on the receiver's line. The whole property navigation is the receiver:
+   * it sits alone on the introducer's line and every `.call`, including the first (`.asSequence()`),
+   * lands on its own line — NOT collapsed to `users.users.asSequence()` (the default
+   * receiver-through-first-call attachment). This is the `breakBeforeFirstCall` companion to
+   * [chain-receiver-attached-vs-broken-is-author-preserving], where the receiver was a bare
+   * reference. From ICPC-live CATSDataSource.kt:163. Regression: the leading `.users` property was
+   * pulled up with `.asSequence()` because `sourceBreaksAfterChainReceiver` only checked the break
+   * before the very first `.member`, missing the break before the first `.call`.
+   */
+  @Test
+  fun `chain-receiver-with-property-run-broken-before-first-call-is-preserved`() =
+      check(
+          input =
+              """fun f() {
+    val teamList: List<TeamInfo> = users.users
+        .asSequence()
+        .filter { team -> team.role == "in_contest" }
+        .map { team -> TeamInfo(id = team.account_id.toTeamId(), organizationId = null) }
+        .toList()
+}""",
+          expected =
+              """fun f() {
+    val teamList: List<TeamInfo> = users.users
+        .asSequence()
+        .filter { team -> team.role == "in_contest" }
+        .map { team -> TeamInfo(id = team.account_id.toTeamId(), organizationId = null) }
+        .toList()
+}""",
+      )
+
+  /**
    * §7 with a lowercase receiver: the receiver-through-first-call stays on the introducer's line
    * regardless of the receiver's name/casing, then each subsequent `.step` wraps to its own line.
    * Matches report.md's `chain-lambda-steps`. Regression: the receiver `repository` was being

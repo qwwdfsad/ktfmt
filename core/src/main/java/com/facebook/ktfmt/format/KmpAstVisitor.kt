@@ -2670,6 +2670,41 @@ internal class KmpAstVisitor(
   }
 
   /**
+   * Index of the first part that is an actual `.call(...)` (its selector is a call), i.e. the first
+   * *call* in the chain — the property/reference navigation before it (`users.users`,
+   * `DMLTestsData.Users.id`) is part of the receiver. Returns −1 if the chain has no such call.
+   */
+  private fun firstCallPartIndex(parts: List<KmpNode>): Int {
+    for (i in 1 until parts.size) {
+      val part = parts[i]
+      if ((part.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
+          part.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) &&
+          part.qualifiedSelector()?.type == KtNodeTypes.CALL_EXPRESSION)
+          return i
+    }
+    return -1
+  }
+
+  /**
+   * True when the source broke the chain right before its FIRST `.call(...)`, across a leading
+   * property/reference run that itself stays on the receiver's line (`users.users` ⏎ `.asSequence()`,
+   * `DMLTestsData.Users.id` ⏎ `.count()`). This is the §7 "receiver broken off" case where the
+   * receiver is more than a bare reference: the whole property navigation is the receiver, it sits
+   * alone on the introducer line, and every `.call` — including the first — lands on its own line.
+   * Distinct from [sourceBreaksAfterChainReceiver] (a break before the very first `.member`, so the
+   * bare receiver `parts[0]` sits alone and even the leading `.property`s wrap); this fires only when
+   * the first `.call` follows at least one leading `.property`/`.reference` (`firstCallIndex > 1`).
+   */
+  private fun sourceBreaksBeforeFirstCall(parts: List<KmpNode>): Boolean {
+    val idx = firstCallPartIndex(parts)
+    if (idx <= 1) return false
+    val recvEnd = parts[idx].qualifiedReceiver()?.endOffset ?: return false
+    val selStart = parts[idx].qualifiedSelector()?.startOffset ?: return false
+    if (recvEnd < 0 || recvEnd >= selStart || selStart > code.length) return false
+    return code.substring(recvEnd, selStart).contains('\n')
+  }
+
+  /**
    * True when the source broke the chain right after the receiver-through-first-call — a `\n` before
    * the FIRST `.member` whose receiver already ends in a call (`Flowable.fromArray(1)` ⏎
    * `.onBackpressureDrop()`). §7 preserves the author's staircase: when this holds, the chain stays
@@ -2742,10 +2777,23 @@ internal class KmpAstVisitor(
         }
     val breakReceiverOff =
         options.optofmt && chainLinkCount >= 2 && sourceBreaksAfterChainReceiver(parts)
-    // Preserve the staircase when the author broke EITHER the receiver off (`breakReceiverOff`) OR the
-    // first subsequent `.call` onto its own line — both are genuine author intent (never a fill break).
+    // §7: the author broke the chain before its FIRST `.call`, across a leading property/reference run
+    // that stays on the receiver's line (`users.users` ⏎ `.asSequence()`). The receiver
+    // (`users.users`) sits alone and every `.call`, including the first, lands on its own line — like
+    // `breakReceiverOff`, but the leading property run still groups onto the receiver instead of each
+    // `.property` wrapping. Only when there IS such a run (`firstCallIndex > 1`, so not already
+    // covered by `breakReceiverOff`, whose break sits before the very first `.member`).
+    val breakBeforeFirstCall =
+        options.optofmt &&
+            chainLinkCount >= 2 &&
+            !breakReceiverOff &&
+            sourceBreaksBeforeFirstCall(parts)
+    // Preserve the staircase when the author broke EITHER the receiver off (`breakReceiverOff` /
+    // `breakBeforeFirstCall`) OR the first subsequent `.call` onto its own line — all are genuine
+    // author intent (never a fill break).
     val forceBroken =
         breakReceiverOff ||
+            breakBeforeFirstCall ||
             (options.optofmt &&
                 chainLinkCount >= 2 &&
                 sourceBreaksBeforeFirstSubsequentCall(parts))
@@ -2759,7 +2807,8 @@ internal class KmpAstVisitor(
     // candidate path, which renders the receiver's body at one indent and lets §1 attach the tail.
     if (options.optofmt &&
         (soleTrailingLambda || isBaseCallWithSoleTrailingLambdaTail(expression))) {
-      emitChainWithHangableTrailingLambda(parts, forceBroken, breakReceiverOff)
+      emitChainWithHangableTrailingLambda(
+          parts, forceBroken, breakReceiverOff, breakBeforeFirstCall)
       return
     }
     // The gjf (non-optofmt) path keeps its block-like trailing lambda; optofmt non-sole-lambda chains
@@ -2767,7 +2816,10 @@ internal class KmpAstVisitor(
     val useBlockLikeLambdaStyle = soleTrailingLambda && !options.optofmt
     val groupingInfos =
         computeGroupingInfo(
-            parts, useBlockLikeLambdaStyle, suppressReceiverGrouping = breakReceiverOff)
+            parts,
+            useBlockLikeLambdaStyle,
+            suppressReceiverGrouping = breakReceiverOff,
+            breakBeforeFirstCall = breakBeforeFirstCall)
     // optofmt §1/§7: a trailing lambda on a call that stays grouped on the receiver's intro line
     // (`recv.first(x) { … }.tail()`) forces the whole chain multiline via the lambda's own body
     // breaks — even though the chain itself is not "too long for one line". Its trailing `.calls`
@@ -2810,11 +2862,15 @@ internal class KmpAstVisitor(
       parts: List<KmpNode>,
       forceBroken: Boolean = false,
       breakReceiverOff: Boolean = false,
+      breakBeforeFirstCall: Boolean = false,
   ) {
     val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
     val groupingInfos =
         computeGroupingInfo(
-            parts, useBlockLikeLambdaStyle = false, suppressReceiverGrouping = breakReceiverOff)
+            parts,
+            useBlockLikeLambdaStyle = false,
+            suppressReceiverGrouping = breakReceiverOff,
+            breakBeforeFirstCall = breakBeforeFirstCall)
     val trailingSelector = parts.last().qualifiedSelector()
     val lambda =
         trailingSelector?.meaningfulChildren()?.firstOrNull { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
@@ -3138,6 +3194,11 @@ internal class KmpAstVisitor(
       // chain where every call carries a trailing lambda (see [emitQualifiedExpression]). Array-access
       // and postfix (`!!`) grouping still applies.
       suppressReceiverGrouping: Boolean = false,
+      // optofmt §7: when true, the leading property/reference run still groups onto the receiver but
+      // the FIRST `.call` (and everything after) breaks to its own line — the author put the receiver
+      // (`users.users`) alone on the introducer line by breaking before its first `.call`. Unlike
+      // [suppressReceiverGrouping], this KEEPS the `.property` navigation attached to the receiver.
+      breakBeforeFirstCall: Boolean = false,
   ): List<GroupingInfo> {
     val groupingInfos = List(parts.size) { GroupingInfo() }
     var lastIndexToOpen = 0
@@ -3157,7 +3218,8 @@ internal class KmpAstVisitor(
               !suppressReceiverGrouping &&
               current != null &&
               previous != null &&
-              shouldGroupPartWithPrevious(parts, part, index, previous, current)) {
+              shouldGroupPartWithPrevious(
+                  parts, part, index, previous, current, breakBeforeFirstCall)) {
             groupingInfos[0].groupOpenCount++
             groupingInfos[index].shouldCloseGroup = true
           } else {
@@ -3179,7 +3241,17 @@ internal class KmpAstVisitor(
       index: Int,
       previous: KmpNode,
       current: KmpNode,
+      // optofmt §7: the author broke before the chain's first `.call` (`users.users` ⏎
+      // `.asSequence()`). The first call — a CALL applied to a non-CALL receiver, i.e. the boundary
+      // between the leading property/reference run and the first invocation — must NOT group; it
+      // starts the staircase. Leading `.property`/`.reference` links (current is not a CALL) still
+      // group onto the receiver, so `users.users` stays whole.
+      breakBeforeFirstCall: Boolean = false,
   ): Boolean {
+    if (breakBeforeFirstCall &&
+        current.type == KtNodeTypes.CALL_EXPRESSION &&
+        previous.type != KtNodeTypes.CALL_EXPRESSION)
+        return false
     val isDotQualified = part.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION
     // optofmt §7: keep the receiver through its first call on the introducer's line — the first
     // `.call(...)` groups with its receiver no matter the receiver's name/casing (e.g.
