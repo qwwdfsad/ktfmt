@@ -1115,6 +1115,28 @@ class AliasesTests {
       )
 
   /**
+   * §2/§3: an ASSIGNMENT (`key = a + b`, not a `val` initializer) whose RHS is a `+`-concat keeps the
+   * `=` attached (§3) and wraps the concat's continuation operand at ONE indent below the assignee —
+   * NOT glued at the assignee's own column. Regression: an assignment is itself a BINARY_EXPRESSION in
+   * the PSI, so the RHS concat saw a BINARY_EXPRESSION parent and took the mixed-operator ZERO-indent
+   * path meant for `a - b * c`, dropping the second operand to the assignee's column with no
+   * continuation indent. From ICPC-live BasicAuthKey.kt:23.
+   */
+  @Test
+  fun `assignment-concat-rhs-wraps-operand-at-one-indent`() =
+      check(
+          input =
+              """fun f() {
+    key = "Basic " + Base64.getEncoder().encodeToString("${'$'}{creds.username}:${'$'}{creds.password}".toByteArray())
+}""",
+          expected =
+              """fun f() {
+    key = "Basic " +
+        Base64.getEncoder().encodeToString("${'$'}{creds.username}:${'$'}{creds.password}".toByteArray())
+}""",
+      )
+
+  /**
    * §2/§7: a block-bodied `object` expression used as a chain receiver (`object : X { … }.call()`)
    * keeps its body ONE level below the introducer, not two — the enclosing chain wrap must not push
    * the object body a second level deep. Regression: the body drifted to indent 12 (and `}` to 8).

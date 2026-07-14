@@ -2117,11 +2117,20 @@ internal class KmpAstVisitor(
     // binary) supplies the single continuation indent; each nested one adds ZERO. Elsewhere
     // (`val x = a && b`, an elvis in `return`) the first operand stays on the introducer's line and
     // the chain supplies its own single continuation indent.
+    // A nested-operand parent supplies the single indent ONLY when it is another *arithmetic/logical*
+    // binary (the mixed-operator case). An assignment (`key = a + b`) is also a BINARY_EXPRESSION in
+    // the PSI, but its RHS is an introducer body handled by [emitIntroducerRhs] with NO enclosing
+    // indent block — so the operands must supply their OWN one-level continuation indent here, else
+    // the wrapped operand lands at the assignee's column (§2 drift: the `+` continuation glued under
+    // `key =` at the same indent). Exclude assignment-operator parents.
+    val parent = node.parent()
+    val parentIsNestedBinary =
+        parent?.type == KtNodeTypes.BINARY_EXPRESSION && parent.binaryOperator() !in assignmentOps
     val operandIndent =
         if (options.optofmt &&
-            (node.parent()?.type == KtNodeTypes.CONDITION ||
-                node.parent()?.type == KtNodeTypes.VALUE_ARGUMENT ||
-                node.parent()?.type == KtNodeTypes.BINARY_EXPRESSION))
+            (parent?.type == KtNodeTypes.CONDITION ||
+                parent?.type == KtNodeTypes.VALUE_ARGUMENT ||
+                parentIsNestedBinary))
             ZERO
         else expressionBreakIndent
 
