@@ -2751,6 +2751,37 @@ internal class KmpAstVisitor(
             sel.meaningfulChildren().any { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
       } == true
 
+  /**
+   * §5/§7: true when `parts[index]` is a lambda-free `.call()`/`.property` tail (`.toList()`, `.size`,
+   * `.first()`) whose immediately preceding part carries a trailing lambda (`… .map { … }`). Such a
+   * tail MAY hug the lambda's closing `}` (`}.toList()`) — see [sourceBreaksBeforeSelector], which
+   * decides whether it does per the author's source. Only lambda-free tails are eligible: a tail that
+   * carries its OWN lambda is a full §7 `.call` and keeps its own line (so `mapValues { }
+   * .filterValues { }` never packs two lambdas per line).
+   */
+  private fun isStickyLambdaFreeTail(parts: List<KmpNode>, index: Int): Boolean {
+    if (!options.optofmt || index < 1) return false
+    val part = parts[index]
+    if (part.type != KtNodeTypes.DOT_QUALIFIED_EXPRESSION &&
+        part.type != KtNodeTypes.SAFE_ACCESS_EXPRESSION)
+        return false
+    return !partHasTrailingLambda(part) && partHasTrailingLambda(parts[index - 1])
+  }
+
+  /**
+   * True when the source has a line break immediately before [part]'s `.member` (a `\n` between the
+   * receiver's end and the selector's start). Per-link generalization of the receiver-break checks;
+   * used by the §5/§7 sticky-tail rule to preserve, per link, whether the author hugged a tail onto
+   * the preceding `}` (`}.toList()`) or broke it onto its own line — a source-based decision, so both
+   * forms are idempotent (a hugged tail re-reads as hugged, a broken one as broken).
+   */
+  private fun sourceBreaksBeforeSelector(part: KmpNode): Boolean {
+    val recvEnd = part.qualifiedReceiver()?.endOffset ?: return false
+    val selStart = part.qualifiedSelector()?.startOffset ?: return false
+    if (recvEnd < 0 || recvEnd >= selStart || selStart > code.length) return false
+    return code.substring(recvEnd, selStart).contains('\n')
+  }
+
   private fun emitQualifiedExpression(expression: KmpNode) {
     val parts = breakIntoParts(expression)
     // optofmt §1/§7: a chain ending in a SOLE trailing lambda (`receiver.…run { … }`) has two
@@ -3034,6 +3065,20 @@ internal class KmpAstVisitor(
         if (options.optofmt && index in 1..receiverFirstCallEnd) {
           // §7: no break inside the receiver-through-first-call unit — the `.call` name concatenates
           // directly onto the receiver (`OverrideOrganizations` + `.Override`).
+        } else if (forceBreaks &&
+            isStickyLambdaFreeTail(parts, index) &&
+            !sourceBreaksBeforeSelector(part)) {
+          // §5/§7: in an author-broken staircase, the author wrote a lambda-free `.call()`/`.property`
+          // tail hugging the preceding trailing-lambda call's `}` (`}.toList()` — no newline before
+          // the tail). Preserve that hug with a fill break (attaches when it fits, drops to its own
+          // line on overflow). The hug is decided PER LINK by the source, so it is idempotent — a
+          // hugged tail re-reads as hugged, and a tail the author broke onto its own line
+          // (`sourceBreaksBeforeSelector`) falls through to the forced break below and stays there.
+          // Only in the force-broken case: when the lambda call instead sits GROUPED on the intro
+          // line, the existing `groupedLambdaEnd` path (below) already hugs the tail (`}.join()`); and
+          // a one-line source (not force-broken) staircases per default §7, so a tail with no source
+          // newline there is NOT a hug intent — it's just the whole chain on one line.
+          builder.breakOp(FillMode.INDEPENDENT, "", ZERO)
         } else if (forceBreaks && !groupingInfos[index].shouldCloseGroup) {
           // §7: force every subsequent `.call` onto its own line (the receiver-through-first-call
           // stays grouped, so its break is not forced). Marked chain-structural so it is suppressed

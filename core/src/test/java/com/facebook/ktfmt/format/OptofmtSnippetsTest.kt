@@ -518,6 +518,38 @@ public fun Flow<ContestUpdate>.addComputedData(configure: ComputedDataConfig.() 
       )
 
   /**
+   * §5/§7: in an author-broken staircase, a lambda-free `.call()`/`.property` tail the author wrote
+   * hugging the preceding trailing-lambda call's `}` (`}.toList()`) STAYS hugged instead of dropping
+   * to its own line — the block-body hugging economy of §5. The hug is preserved per link from the
+   * source (a fill break attaches it when it fits), so it is idempotent: a hugged tail re-reads as
+   * hugged. A tail the author instead broke onto its own line is kept on its own line (verified by
+   * [chain-receiver-with-property-run-broken-before-first-call-is-preserved], whose `.toList()` is on
+   * its own line in the source). From ICPC-live CATSDataSource.kt:163.
+   */
+  @Test
+  fun `chain-lambda-free-tail-hugs-closing-brace-when-author-hugged-it`() =
+      check(
+          input =
+              """fun f() {
+    val teamList: List<TeamInfo> = users.users
+        .asSequence()
+        .filter { team -> team.role == "in_contest" }
+        .map { team ->
+            TeamInfo(id = team.account_id.toTeamId(), fullName = team.name, organizationId = null)
+        }.toList()
+}""",
+          expected =
+              """fun f() {
+    val teamList: List<TeamInfo> = users.users
+        .asSequence()
+        .filter { team -> team.role == "in_contest" }
+        .map { team ->
+            TeamInfo(id = team.account_id.toTeamId(), fullName = team.name, organizationId = null)
+        }.toList()
+}""",
+      )
+
+  /**
    * §7 with a lowercase receiver: the receiver-through-first-call stays on the introducer's line
    * regardless of the receiver's name/casing, then each subsequent `.step` wraps to its own line.
    * Matches report.md's `chain-lambda-steps`. Regression: the receiver `repository` was being
