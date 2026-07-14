@@ -60,6 +60,68 @@ class OptofmtSnippetsTest {
 }""",
       )
 
+  /**
+   * §1/§2: an `if (cond) <non-block body>` whose condition text fits but whose *closing `)`* tips the
+   * header one past the column limit must WRAP THE CONDITION (`if (` ⏎ cond ⏎ `) return …`), not leave
+   * the `if (…))` header overflowing while only the body breaks onto its own line. §1 requires an
+   * overflow that wrapping can eliminate to be eliminated. Regression: `emitKeywordWithCondition`
+   * emitted the closing `)` OUTSIDE the wrappable condition level, so the level's fit test never saw
+   * the `)` — a condition ending exactly at column 100 looked like it fit while the `)` overflowed at
+   * 101.
+   */
+  @Test
+  fun `if-condition-wraps-when-trailing-paren-overflows`() =
+      check(
+          input =
+              """fun processChunk(chunk: List<Int>, chainAwarded: Set<Int>, award: Award): Boolean {
+    if (chainAwarded.size + chunk.size > (award.chainLimit ?: Int.MAX_VALUE) && extraGuardFlagValue2) return false
+    return true
+}""",
+          expected =
+              """fun processChunk(chunk: List<Int>, chainAwarded: Set<Int>, award: Award): Boolean {
+    if (
+        chainAwarded.size + chunk.size > (award.chainLimit ?: Int.MAX_VALUE) && extraGuardFlagValue2
+    ) return false
+    return true
+}""",
+      )
+
+  /**
+   * §3 (via §1/§2): a `val x = buildList { … }` scoping-call initializer STAYS ATTACHED to `=` even
+   * when a deeply nested body line's `if (…)` header would overflow — because that header wraps its
+   * condition (see [if-condition-wraps-when-trailing-paren-overflows]) to reach zero overflow, so the
+   * attached candidate no longer loses to break-after-`=` on §1's worst-overflow criterion. The exact
+   * live-v3 AbstractScoreboardCalculator.kt:69 symptom: optofmt was breaking after `=` (and splitting
+   * the inner condition awkwardly at a deeper indent) purely because the un-wrapped inner `if` header
+   * carried a one-column overflow into the attached candidate.
+   */
+  @Test
+  fun `scoping-call-initializer-stays-attached-when-inner-condition-wraps`() =
+      check(
+          input =
+              """class C {
+    fun f() {
+        val awards = buildList {
+            for (chain in chains) {
+                if (chainAwarded.size + chunk.size > (award.chainLimit ?: Int.MAX_VALUE) && someFlag) return
+            }
+        }
+    }
+}""",
+          expected =
+              """class C {
+    fun f() {
+        val awards = buildList {
+            for (chain in chains) {
+                if (
+                    chainAwarded.size + chunk.size > (award.chainLimit ?: Int.MAX_VALUE) && someFlag
+                ) return
+            }
+        }
+    }
+}""",
+      )
+
   @Test
   fun `indent-economy`() =
       check(

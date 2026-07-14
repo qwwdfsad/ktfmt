@@ -1171,17 +1171,22 @@ internal class KmpAstVisitor(
       if (surroundConditionWithParens) emit("(")
       if (options.manageTrailingCommas || options.optofmt) {
         // optofmt §2: when the condition wraps, break after `(`, lay every operand at one shared
-        // indent, and put the closing `)` on its own line — no continuation drift.
+        // indent, and put the closing `)` on its own line — no continuation drift. The closing `)`
+        // is emitted INSIDE this level so its column counts toward the level's fit test: a condition
+        // whose own text fits but whose trailing `)` tips the line one past the limit still wraps,
+        // rather than leaving the `if (…))` header overflowing while only the body breaks (§1: an
+        // overflow that wrapping the condition can eliminate must be eliminated).
         block(expressionBreakIndent) {
           builder.breakOp(FillMode.UNIFIED, "", ZERO)
           visit(condition)
           builder.breakOp(FillMode.UNIFIED, "", expressionBreakNegativeIndent)
+          if (surroundConditionWithParens) emit(")")
         }
       } else {
         block(ZERO) { visit(condition) }
+        if (surroundConditionWithParens) emit(")")
       }
     }
-    if (surroundConditionWithParens) emit(")")
   }
 
   private fun visitIfExpression(node: KmpNode) {
