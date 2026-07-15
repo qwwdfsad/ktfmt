@@ -2086,6 +2086,32 @@ internal class KmpAstVisitor(
    */
   private val infixIntroducers = setOf("to")
 
+  /**
+   * §6/§4/§5: true when [node] (a binary operand) is an expression that hangs a MULTILINE trailing
+   * lambda when it wraps — a scoping lambda call (`run { … }`, `x.let { … }`), a sole-trailing-lambda
+   * chain (`Foo(a).also { … }`), or a direct call with a trailing lambda (`foo(a) { … }`), whose lambda
+   * body renders across multiple lines. For such an operand the operator ahead of it should stay
+   * ATTACHED (§6: elvis/operator stays on the line "when the expression fits") and the lambda body
+   * should hang (§4/§5), rather than the operator breaking onto its own line — see
+   * [visitBinaryExpression]. Restricted to a MULTILINE lambda (via [callTrailingLambdaRendersMultiline]):
+   * a single-line lambda leaves no block to hang, so §6 correctly breaks the operator when the whole
+   * expression does not fit.
+   */
+  private fun rhsHangsTrailingLambda(node: KmpNode?): Boolean {
+    node ?: return false
+    val call =
+        when (node.type) {
+          KtNodeTypes.CALL_EXPRESSION -> node
+          KtNodeTypes.DOT_QUALIFIED_EXPRESSION,
+          KtNodeTypes.SAFE_ACCESS_EXPRESSION ->
+              if (isSoleTrailingLambdaChain(node))
+                  node.qualifiedSelector()?.takeIf { it.type == KtNodeTypes.CALL_EXPRESSION }
+              else null
+          else -> null
+        } ?: return false
+    return callTrailingLambdaRendersMultiline(call)
+  }
+
   private fun visitBinaryExpression(node: KmpNode) {
     sync(node)
     val opText = node.binaryOperator()
@@ -2174,6 +2200,66 @@ internal class KmpAstVisitor(
         else expressionBreakIndent
 
     val leftMost = parts.first()
+
+    // §6/§4/§5: when the LAST operand hangs a trailing lambda (`x ?: Foo(a).also { … }`,
+    // `a + build { … }`), keeping the operator(s) ATTACHED and letting that lambda hang costs FEWER
+    // lines than breaking the operator onto its own line while the lambda still hangs — and §6 says the
+    // operator "stays on the same line when the expression fits". The generic flat-block below always
+    // breaks the operator once the level is multiline (which a hanging lambda body forces), so it never
+    // offers the attached-and-hang layout. Offer it explicitly here and let §1 pick by line count: the
+    // attached candidate wins when the operator expression up to the lambda's opener fits, and falls to
+    // the broken candidate when it would overflow. Each operand/operator token is captured ONCE (source
+    // order preserved) and reused in both arrangements, so the source-token cursor advances once.
+    // Skipped when a line-breaking comment sits before an operator (that forces the break anyway).
+    val opsBreakable = parts.all { it.binaryOperator() != ".." && it.binaryOperator() != "..<" }
+    val noOperatorComment =
+        parts.none { it.child(KtNodeTypes.OPERATION_REFERENCE)?.hasLineBreakingCommentBefore() == true }
+    if (options.optofmt &&
+        opsBreakable &&
+        noOperatorComment &&
+        rhsHangsTrailingLambda(parts.last().binaryRight())) {
+      val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
+      val firstOperand = sink.capture { visit(leftMost.binaryLeft()) }
+      val links =
+          parts.map { part ->
+            val pop = part.binaryOperator() ?: ""
+            Triple(pop, sink.capture { emit(pop) }, sink.capture { visit(part.binaryRight()) })
+          }
+      // ATTACHED: operators inline, the last operand's lambda hangs (`left op right { … }`).
+      val attached =
+          sink.capture {
+            sink.appendSubtree(firstOperand)
+            for ((_, opDoc, operand) in links) {
+              sink.space()
+              sink.appendSubtree(opDoc)
+              sink.space()
+              sink.appendSubtree(operand)
+            }
+          }
+      // BROKEN: the generic §6 flat-block — elvis operator at the start of the continuation line, other
+      // operators at the end, every operand at one shared indent.
+      val broken =
+          sink.capture {
+            sink.appendSubtree(firstOperand)
+            block(operandIndent) {
+              for ((pop, opDoc, operand) in links) {
+                if (pop == "?:") {
+                  builder.breakOp(FillMode.UNIFIED, " ", ZERO)
+                  sink.appendSubtree(opDoc)
+                  sink.space()
+                } else {
+                  sink.space()
+                  sink.appendSubtree(opDoc)
+                  builder.breakOp(FillMode.UNIFIED, " ", ZERO)
+                }
+                sink.appendSubtree(operand)
+              }
+            }
+          }
+      sink.emitAlt(listOf(attached, broken))
+      return
+    }
+
     visit(leftMost.binaryLeft())
     for (part in parts) {
       val isFirst = part === leftMost
@@ -2855,11 +2941,36 @@ internal class KmpAstVisitor(
   private fun partLambdaRendersMultiline(part: KmpNode): Boolean {
     val call =
         part.qualifiedSelector()?.takeIf { it.type == KtNodeTypes.CALL_EXPRESSION } ?: return false
-    val lambda =
+    return callTrailingLambdaRendersMultiline(call)
+  }
+
+  /**
+   * True when [call]'s trailing lambda (`… { … }`) will render across multiple physical lines (see
+   * [functionLiteralRendersMultiline]). [call] is a `CALL_EXPRESSION`; returns false if it has no
+   * trailing lambda.
+   */
+  private fun callTrailingLambdaRendersMultiline(call: KmpNode): Boolean {
+    val functionLiteral =
         call.meaningfulChildren()
             .firstOrNull { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
-            ?.argumentExpression() ?: return false
-    val functionLiteral = lambda.child(KtNodeTypes.FUNCTION_LITERAL) ?: return false
+            ?.argumentExpression()
+            ?.child(KtNodeTypes.FUNCTION_LITERAL) ?: return false
+    return functionLiteralRendersMultiline(functionLiteral)
+  }
+
+  /**
+   * §5/§7: true when [functionLiteral] will render across multiple physical lines — its body has more
+   * than one statement, or a single statement that itself spans lines (a nested multi-statement /
+   * `;`-separated / hand-broken block, e.g. `{ runBlocking { a(); b() } }`), or a single statement
+   * simply too wide to fit on one line. Only such a lambda leaves a closing `}` on its own line for a
+   * following lambda-free tail to hug (the block-body economy of [emitQualifiedExpression]'s
+   * `groupedLambdaEnd`) or for an operator ahead of it to stay attached ([visitBinaryExpression]). A
+   * single-line lambda (`{ it.exists() }`) produces no such `}`. The width test is whitespace- and
+   * trailing-comma-invariant (see [normalizedFlatWidth]) so the classification is identical across
+   * passes — without it, a wide single statement written on one line in the source was classified
+   * single-line on pass 1 then multiline on pass 2 (a source-dependent non-idempotency).
+   */
+  private fun functionLiteralRendersMultiline(functionLiteral: KmpNode): Boolean {
     val block = functionLiteral.child(KtNodeTypes.BLOCK) ?: return false
     val statements =
         block.meaningfulChildren().filter {
@@ -2868,13 +2979,6 @@ internal class KmpAstVisitor(
               it.type != KtTokens.SEMICOLON
         }
     if (statements.size != 1) return statements.isNotEmpty()
-    // A single-statement body renders multiline when the author already broke it (source newline/
-    // semicolon) OR when the lambda `{ params -> stmt }` is simply too wide to fit on one line and so
-    // MUST wrap regardless of how it was written. The width test is whitespace- and trailing-comma-
-    // invariant (see [normalizedFlatWidth]), so both hold identically across passes — without it, a
-    // wide single statement written on one line in the source (`{ … -> Comment(a, b, …) }`) was
-    // classified single-line on pass 1 (tail staircased) then multiline on pass 2 (tail hugged),
-    // a source-dependent non-idempotency.
     return functionLiteral.descendants().any {
       (it.type in KtTokens.WHITESPACES && it.text.contains('\n')) || it.type == KtTokens.SEMICOLON
     } || normalizedFlatWidth(functionLiteral) > options.maxWidth

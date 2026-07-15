@@ -2290,4 +2290,76 @@ fun testNoneShortCircuit() = runTest {
         )
     }.executeAsList()""",
       )
+
+  /**
+   * §6 (with §4/§5): an elvis `?:` whose right-hand operand hangs a MULTILINE trailing lambda
+   * (`x ?: Foo(a).also { … }`) keeps the `?:` ATTACHED to its left-hand side and lets the lambda body
+   * hang — the whole `lhs ?: rhs.call(args).also {` opener fits, so §6 ("elvis stays on the same line
+   * when the expression fits") applies and it is one line shorter than breaking `?:` onto its own line.
+   * Regression: the generic operator flat-block always broke the operator once the level was multiline
+   * (which the hanging lambda body forces), so it never offered the attached-and-hang layout; §1 then
+   * had only the fewer-columns-but-more-lines broken form to pick. From kotlinx.coroutines
+   * AbstractSharedFlow.kt:30.
+   */
+  @Test
+  fun `elvis-with-multiline-trailing-lambda-rhs-stays-attached`() =
+      check(
+          input =
+              """fun f(): StateFlow<Int> {
+    return _subscriptionCount ?: SubscriptionCountStateFlow(nCollectors).also { firstThing(); _subscriptionCount = it }
+}""",
+          expected =
+              """fun f(): StateFlow<Int> {
+    return _subscriptionCount ?: SubscriptionCountStateFlow(nCollectors).also {
+        firstThing()
+        _subscriptionCount = it
+    }
+}""",
+      )
+
+  /** §6 companion: the same holds for a `+` (end-of-line operator) with a multiline trailing lambda. */
+  @Test
+  fun `plus-with-multiline-trailing-lambda-rhs-stays-attached`() =
+      check(
+          input =
+              """fun f(): X {
+    return firstOperandHere + SubscriptionCountStateFlow(nCollectors).also { firstThing(); useIt(it) }
+}""",
+          expected =
+              """fun f(): X {
+    return firstOperandHere + SubscriptionCountStateFlow(nCollectors).also {
+        firstThing()
+        useIt(it)
+    }
+}""",
+      )
+
+  /**
+   * §6 boundary: when the elvis right-hand operand's trailing lambda is a SINGLE line (no block to
+   * hang) and the whole expression does not fit, the `?:` DOES wrap to the start of its own
+   * continuation line (the canonical §6 null-fallback layout) — the attached-and-hang layout is offered
+   * only for a multiline lambda (see [KmpAstVisitor.rhsHangsTrailingLambda]). From kotlinx.coroutines
+   * JobSupport.kt:803.
+   */
+  @Test
+  fun `elvis-with-single-line-trailing-lambda-rhs-breaks-operator`() =
+      check(
+          input =
+              """class C {
+    fun f() {
+        while (true) {
+            val causeException = causeExceptionCache ?: createCauseException(cause).also { causeExceptionCache = it }
+        }
+    }
+}""",
+          expected =
+              """class C {
+    fun f() {
+        while (true) {
+            val causeException = causeExceptionCache
+                ?: createCauseException(cause).also { causeExceptionCache = it }
+        }
+    }
+}""",
+      )
 }
