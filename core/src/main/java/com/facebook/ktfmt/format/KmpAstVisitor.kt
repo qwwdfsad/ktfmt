@@ -53,6 +53,13 @@ internal class KmpAstVisitor(
    * annotated expression to force its annotation onto its own line (§12). */
   private var annotatedHeadOfBreakingParen: Boolean = false
 
+  /** Set by [visitSoleBlockArgHugOrSplit] while capturing a sole block-like argument (§5). When true,
+   * a sole trailing-lambda chain (`recv.method { … }`) inside it keeps its receiver-through-first-call
+   * ATTACHED (never offers the staircase "broken" alternative) — that staircase is never wanted for an
+   * argument that is deciding hug-vs-split, and if offered §1 would take it to save a line, breaking the
+   * receiver off (§7 violation) instead of hugging or full-splitting. */
+  private var forceSoleArgChainAttach: Boolean = false
+
   private fun genSym(): BreakTag = BreakTag()
 
   fun visitFile(file: KmpNode) {
@@ -2410,42 +2417,72 @@ internal class KmpAstVisitor(
   }
 
   /**
-   * §7: a two-link chain `base { … }.tail { … }` whose base receiver is ITSELF a trailing-lambda call
-   * (`flow { … }`, `buildList { … }`) and whose sole tail is a trailing-lambda call applied directly to
-   * it (`.none { … }`, `.map { … }`). Such a chain is emitted with the tail hugging the base's `}` (see
-   * [emitChainWithHangableTrailingLambda]); as a call's SOLE argument it is block-like and hangs off the
-   * call opener (§5), just like a bare lambda or a scoping-function call.
+   * §4/§5: emit a call's sole (unnamed) scoping/chain trailing-lambda argument (`call(x.let { … })`,
+   * `call(run { … })`, `call(teams.associateWith { … })`) as an `emitAlt` of two competing layouts,
+   * letting §1 choose:
+   * - HUG (§5 indent economy): the scoping call hugs the opener and the closers stack —
+   *   `call(x.let {` … `})` — so the body sits at a single indent.
+   * - SPLIT (§4): the argument drops to its own line with a §14 trailing comma and `)` on its own line.
+   *
+   * §1 picks HUG when it costs fewer lines — i.e. when the lambda body must wrap regardless of which
+   * layout is chosen (`cause?.let { <wide elvis> }`) — and SPLIT when the body fits inline on the split
+   * line (a genuine line-count tie resolves to the first-listed SPLIT candidate, so
+   * `OverrideTeams(teams.associateWith { fits })` keeps its full-split form). This is column-dependent,
+   * which is exactly why it is left to the layout solver rather than a whitespace-based heuristic (the
+   * latter cannot be both correct and idempotent here).
+   *
+   * The prefix `(`, each argument, and the postfix `)` are captured ONCE (advancing the source-token
+   * cursor exactly once) and reused in both candidates via `visitEachCommaSeparated`'s reuse mode, so
+   * the two arrangements share identical content and indent handling without double-consuming source.
    */
-  /**
-   * §4/§5: the number of statements in the trailing-lambda body of a scoping/chain expression
-   * (`x.let { … }`, `teams.associateWith { … }`, `run { … }`). Used to decide whether such a SOLE
-   * call argument is genuinely block-like: a body with ≥2 statements renders as a multi-line block
-   * worth hanging off the call opener (§5); a single-expression body stays inline, so "hanging" it
-   * degenerates to splitting the chain receiver onto the opener line with a dangling `)` — such an
-   * argument should full-split per §4 (its own line, `)` on its own line) instead. Returns 0 when
-   * [node] is not a scoping/chain trailing-lambda shape.
-   */
-  private fun scopingLambdaBodyStatementCount(node: KmpNode?): Int {
-    var carry = node ?: return 0
-    if ((carry.type == KtNodeTypes.DOT_QUALIFIED_EXPRESSION ||
-        carry.type == KtNodeTypes.SAFE_ACCESS_EXPRESSION) &&
-        carry.qualifiedReceiver()?.type == KtNodeTypes.REFERENCE_EXPRESSION) {
-      carry = carry.qualifiedSelector() ?: return 0
-    }
-    if (carry.type == KtNodeTypes.CALL_EXPRESSION) {
-      carry =
-          carry.meaningfulChildren().firstOrNull { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
-              ?.argumentExpression() ?: return 0
-    }
-    if (carry.type == KtNodeTypes.LABELED_EXPRESSION) {
-      carry = carry.meaningfulChildren().lastOrNull { it.type != KtNodeTypes.LABEL_QUALIFIER } ?: return 0
-    }
-    if (carry.type != KtNodeTypes.LAMBDA_EXPRESSION) return 0
-    val functionLiteral = carry.child(KtNodeTypes.FUNCTION_LITERAL) ?: return 0
-    val block = functionLiteral.meaningfulChildren().firstOrNull { it.type == KtNodeTypes.BLOCK } ?: return 0
-    return block.meaningfulChildren().count {
-      it.type != KtTokens.LBRACE && it.type != KtTokens.RBRACE && it.type != KtTokens.SEMICOLON
-    }
+  private fun visitSoleBlockArgHugOrSplit(
+      arguments: List<KmpNode>,
+      hasTrailingComma: Boolean,
+  ): BreakTag? {
+    val sink = builder as com.facebook.ktfmt.format.layout.NativeSink
+    val openParen = sink.capture { emit("(") }
+    val savedForceAttach = forceSoleArgChainAttach
+    forceSoleArgChainAttach = true
+    val itemDocs = arguments.map { arg -> sink.capture { visit(arg) } }
+    forceSoleArgChainAttach = savedForceAttach
+    val closeParen = sink.capture { emit(")") }
+
+    val split =
+        sink.capture {
+          visitEachCommaSeparated(
+              arguments,
+              hasTrailingComma,
+              wrapInBlock = false,
+              breakBeforePostfix = true,
+              leadingBreak = true,
+              prefix = "(",
+              postfix = ")",
+              breakAfterPrefix = true,
+              trailingCommaWhenBroken = true,
+              prebuiltPrefix = openParen,
+              prebuiltItems = itemDocs,
+              prebuiltPostfix = closeParen,
+          )
+        }
+    val hug =
+        sink.capture {
+          visitEachCommaSeparated(
+              arguments,
+              hasTrailingComma,
+              wrapInBlock = true,
+              breakBeforePostfix = false,
+              leadingBreak = false,
+              prefix = "(",
+              postfix = ")",
+              breakAfterPrefix = false,
+              trailingCommaWhenBroken = true,
+              prebuiltPrefix = openParen,
+              prebuiltItems = itemDocs,
+              prebuiltPostfix = closeParen,
+          )
+        }
+    sink.emitAlt(listOf(split, hug))
+    return null
   }
 
   private fun isBaseCallWithSoleTrailingLambdaTail(node: KmpNode?): Boolean {
@@ -2586,15 +2623,22 @@ internal class KmpAstVisitor(
                         // §5/§7: a chain `flow { … }.none { … }` (a base trailing-lambda call plus a sole
                         // trailing-lambda tail) is block-like — hang it off the opener (`assertFalse(flow {`
                         // … `})`) instead of pushing it onto its own line.
-                        isBaseCallWithSoleTrailingLambdaTail(soleArgExpr) ||
-                        // §5 vs §4: a scoping/chain trailing-lambda call (`x.let { … }`, `run { … }`,
-                        // `teams.associateWith { … }`) hangs off the opener ONLY when its body is a
-                        // genuine multi-statement block. A single-expression body stays inline, so
-                        // "hanging" it would split the chain receiver onto the opener line and dangle a
-                        // hugging `)` (`OverrideTeams(teams` ⏎ `.associateWith { … })`) — such an
-                        // argument full-splits per §4 instead (its own line, `)` on its own line).
-                        (isLambdaOrScopingFunction(soleArgExpr) &&
-                            scopingLambdaBodyStatementCount(soleArgExpr) >= 2))))
+                        isBaseCallWithSoleTrailingLambdaTail(soleArgExpr))))
+
+    // §5 vs §4: a sole scoping/chain trailing-lambda call argument (`x.let { … }`, `run { … }`,
+    // `teams.associateWith { … }`). Whether it should HUG the call opener (§5 indent economy) or
+    // full-split (§4) depends on whether its body fits inline on the split line — a COLUMN-dependent
+    // question no whitespace-independent heuristic can answer idempotently. So offer BOTH layouts as
+    // an `emitAlt` and let §1 pick by cost (see [visitSoleBlockArgHugOrSplit]): hug wins when the body
+    // must wrap regardless (fewer lines), split wins the tie when the body fits inline. A bare lambda /
+    // `object` / base-call-tail is unconditionally block-like ([isSingleUnnamedLambda]) and always hugs.
+    val scopingCallSoleArg =
+        options.optofmt &&
+            soleArgExpr != null &&
+            !isSingleUnnamedLambda &&
+            soleArgExpr.type != KtNodeTypes.LAMBDA_EXPRESSION &&
+            isLambdaOrScopingFunction(soleArgExpr)
+    if (scopingCallSoleArg) return visitSoleBlockArgHugOrSplit(arguments, hasTrailingComma)
 
     val wrapInBlock: Boolean
     val breakBeforePostfix: Boolean
@@ -3221,7 +3265,11 @@ internal class KmpAstVisitor(
               sink.appendSubtree(tail)
             }
           }
-      if (forceBroken) sink.appendSubtree(broken) else sink.emitAlt(listOf(attach, broken))
+      if (forceBroken || forceSoleArgChainAttach) {
+        sink.appendSubtree(if (forceSoleArgChainAttach && !forceBroken) attach else broken)
+      } else {
+        sink.emitAlt(listOf(attach, broken))
+      }
       return
     }
 
@@ -3652,7 +3700,18 @@ internal class KmpAstVisitor(
       // a single line — set when the author put a line break right after the opening `(`/`[`. Turns
       // every list break FORCED, so the layout is the same one-per-line form the overflow case yields.
       forceExpand: Boolean = false,
+      // optofmt §5: "reuse mode" for building competing candidate layouts of the SAME source range (an
+      // `emitAlt` of hug-vs-split for a sole block-like argument). When non-null, the prefix, each item,
+      // and the postfix are appended from ALREADY-CAPTURED subtrees instead of visited/emitted, so the
+      // source-token cursor is NOT advanced here (it was advanced exactly once when the pieces were
+      // captured — see [visitSoleBlockArgHugOrSplit]). Comment/dropped-comma handling that would consume
+      // source is skipped in this mode.
+      prebuiltPrefix: com.facebook.ktfmt.format.layout.NDoc? = null,
+      prebuiltItems: List<com.facebook.ktfmt.format.layout.NDoc>? = null,
+      prebuiltPostfix: com.facebook.ktfmt.format.layout.NDoc? = null,
   ): BreakTag? {
+    val reuse = prebuiltItems != null
+    val sink = builder as? com.facebook.ktfmt.format.layout.NativeSink
     // optofmt §4: never emit a trailing comma, and don't let a source one force the split — ignore
     // it entirely so the list is laid out compact-or-fully-split on its own merits. Only on the
     // optofmt (native engine) path only: on the gjf path every source token must be emitted (gjf
@@ -3663,7 +3722,7 @@ internal class KmpAstVisitor(
     val nameTag = if (breakAfterLastElement) null else genSym()
 
     if (prefix != null) {
-      emit(prefix)
+      if (reuse) sink!!.appendSubtree(prebuiltPrefix!!) else emit(prefix)
       if (breakAfterPrefix && breakable) {
         builder.breakOp(FillMode.UNIFIED, "", ZERO, Optional.ofNullable(nameTag))
       }
@@ -3679,10 +3738,10 @@ internal class KmpAstVisitor(
     block(indent, isEnabled = wrapInBlock) {
       if (leadingBreak && breakable) builder.breakOp(breakType, "", ZERO)
       var first = true
-      for (value in list) {
+      for ((i, value) in list.withIndex()) {
         if (!first) emitComma()
         first = false
-        visit(value)
+        if (reuse) sink!!.appendSubtree(prebuiltItems!![i]) else visit(value)
       }
       if (hasTrailingComma) emitComma()
     }
@@ -3691,8 +3750,10 @@ internal class KmpAstVisitor(
       // §8/§14: a source trailing `// note` on the last item stays inline on its line (`item, // note`)
       // instead of being pushed onto its own line before the `)`. The dropped source comma prevents the
       // usual trailing-comment flush from reaching it, so handle it explicitly; when it fires, the §14
-      // comma is already emitted, so close with a plain forced break.
-      if (options.optofmt &&
+      // comma is already emitted, so close with a plain forced break. (Skipped in reuse mode — the
+      // source was already consumed when the pieces were captured, so there is no comma to drop here.)
+      if (!reuse &&
+          options.optofmt &&
           list.isNotEmpty() &&
           (builder as com.facebook.ktfmt.format.layout.NativeSink)
               .emitDroppedTrailingCommaComment(withComma = trailingCommaWhenBroken)) {
@@ -3710,11 +3771,12 @@ internal class KmpAstVisitor(
     if (postfix != null) {
       if (breakAfterLastElement) {
         block(expressionBreakNegativeIndent) {
-          fenceComments()
-          builder.token(postfix, RealOrImaginary.REAL, expressionBreakIndent, Optional.empty())
+          if (!reuse) fenceComments()
+          if (reuse) sink!!.appendSubtree(prebuiltPostfix!!)
+          else builder.token(postfix, RealOrImaginary.REAL, expressionBreakIndent, Optional.empty())
         }
       } else {
-        emit(postfix)
+        if (reuse) sink!!.appendSubtree(prebuiltPostfix!!) else emit(postfix)
       }
     }
     return nameTag

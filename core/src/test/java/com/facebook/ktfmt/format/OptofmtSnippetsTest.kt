@@ -174,6 +174,65 @@ class OptofmtSnippetsTest {
 }""",
       )
 
+  /**
+   * §5 vs §4: a sole scoping-lambda argument whose body is a SINGLE expression that is nonetheless too
+   * wide to fit inline even when the argument is full-split HUGS the call opener (§5 indent economy) —
+   * the body must wrap either way, so hugging keeps it at a single indent instead of the +2 double
+   * indent a full-split would give. This is the complement of
+   * [sole-arg-chain-with-single-expr-lambda-full-splits-not-hangs] (whose body DOES fit inline when
+   * split, so it stays full-split): the hug-vs-split choice is column-dependent and left to §1. From
+   * kotlinx.coroutines Actor.kt:136 (`_channel.cancel(cause?.let { … })`).
+   */
+  @Test
+  fun `sole-arg-scoping-lambda-single-expr-too-wide-to-fit-inline-hugs`() =
+      check(
+          input =
+              """class C {
+    override fun onCancelling(cause: Throwable?) {
+        _channel.cancel(
+            cause?.let {
+                it as? CancellationException
+                    ?: CancellationException("${'$'}classSimpleName was cancelled", it)
+            },
+        )
+    }
+}""",
+          expected =
+              """class C {
+    override fun onCancelling(cause: Throwable?) {
+        _channel.cancel(cause?.let {
+            it as? CancellationException
+                ?: CancellationException("${'$'}classSimpleName was cancelled", it)
+        })
+    }
+}""",
+      )
+
+  /**
+   * Idempotency guard for [sole-arg-scoping-lambda-single-expr-too-wide-to-fit-inline-hugs]: the same
+   * call written with the lambda body on ONE source line must reach the SAME hugged form (the hug/split
+   * decision is column-based, not source-whitespace-based, so it cannot flip between passes).
+   */
+  @Test
+  fun `sole-arg-scoping-lambda-single-expr-one-line-source-still-hugs`() =
+      check(
+          input =
+              """class C {
+    override fun onCancelling(cause: Throwable?) {
+        _channel.cancel(cause?.let { it as? CancellationException ?: CancellationException("${'$'}classSimpleName was cancelled", it) })
+    }
+}""",
+          expected =
+              """class C {
+    override fun onCancelling(cause: Throwable?) {
+        _channel.cancel(cause?.let {
+            it as? CancellationException
+                ?: CancellationException("${'$'}classSimpleName was cancelled", it)
+        })
+    }
+}""",
+      )
+
   @Test
   fun `indent-economy`() =
       check(
