@@ -61,6 +61,29 @@ object Formatter {
       )
 
   /**
+   * Prototype of the `optofmt` layout model (see kotlin-format/RULES.md): one indentation size,
+   * introducers kept attached, no trailing commas, comments never reflowed. Built on the
+   * kotlinlang profile (4-space indent, 100 columns). This is a work-in-progress profile used to
+   * drive the optofmt prototype; not all rules are implemented yet.
+   */
+  @JvmField
+  val OPTOFMT_FORMAT =
+      FormattingOptions(
+          blockIndent = 4,
+          continuationIndent = 4,
+          trailingCommaManagementStrategy = TrailingCommaManagementStrategy.NONE,
+          // optofmt implies the gjf-free native layout engine (the only engine that applies these
+          // rules); other styles use google-java-format.
+          optofmt = true,
+          // optofmt §1 reformats by global optimization ("don't wrap what fits"): a lambda whose
+          // header sits on one line in the input (`?.let { return }`) collapses when it fits. It is
+          // NOT the blanket preserveLambdaBreaks behavior (any newline anywhere pins the lambda open);
+          // instead optofmt honors a targeted signal — a line break right after `->`/`{` (§13) or
+          // after `(`/`[` for lists (§4) — handled in the visitor, so this flag stays off.
+          preserveLambdaBreaks = false,
+      )
+
+  /**
    * format formats the Kotlin code given in 'code' and returns it as a string. This method is
    * accessed through Reflection.
    */
@@ -113,11 +136,62 @@ object Formatter {
       options: FormattingOptions,
       lineSeparator: String,
   ): String {
+    if (options.optofmt) {
+      // optofmt uses the gjf-free native engine: the visitor emits into a native sink and a native
+      // renderer produces the text directly. No OpsBuilder / Doc / JavaOutput involved. Collect the
+      // source leaves (real tokens + comments, in order) so the sink can track token positions and
+      // interleave comments — including trailing ones — at the right place.
+      val leaves = ArrayList<com.facebook.ktfmt.format.layout.SourceLeaf>()
+      fun collectLeaves(node: KmpNode) {
+        // A string template is emitted by the visitor as a single token (its whole text), so treat
+        // it as one leaf — otherwise its `"`/content/`"` sub-leaves desync the sink's token cursor.
+        if (node.type == KtNodeTypes.STRING_TEMPLATE) {
+          leaves.add(
+              com.facebook.ktfmt.format.layout.SourceLeaf(
+                  node.startOffset, node.endOffset, node.text.toString(), isComment = false))
+          return
+        }
+        // A comment (incl. composite KDoc) is one leaf — don't recurse into its parts.
+        if (node.type in KtTokens.COMMENTS) {
+          leaves.add(
+              com.facebook.ktfmt.format.layout.SourceLeaf(
+                  node.startOffset, node.endOffset, node.text.toString(), isComment = true))
+          return
+        }
+        if (node.firstChild() == null) {
+          if (!node.text.isBlank()) {
+            leaves.add(
+                com.facebook.ktfmt.format.layout.SourceLeaf(
+                    node.startOffset, node.endOffset, node.text.toString(), isComment = false))
+          }
+          return
+        }
+        node.children().forEach(::collectLeaves)
+      }
+      collectLeaves(tree)
+      val sink = com.facebook.ktfmt.format.layout.NativeSink(code, leaves)
+      KmpAstVisitor(options, sink, code).visitFile(tree)
+      sink.finish()
+      // RULES §1 optimization criterion. Swap this argument (see
+      // [com.facebook.ktfmt.format.layout.Objectives]) to experiment with different criteria.
+      val rendered =
+          com.facebook.ktfmt.format.layout.NativeRenderer(
+                  options.maxWidth, com.facebook.ktfmt.format.layout.Objectives.DEFAULT)
+              .render(sink)
+      // Multiline-string trailing spaces are protected by tombstone chars (so they survive line
+      // trimming); convert them back, exactly as the gjf path does at the end of prettyPrint.
+      return WhitespaceTombstones.replaceTombstoneWithTrailingWhitespace(rendered)
+    }
+
     val kotlinInput = KotlinInput.fromKmp(code, tree)
     val javaOutput =
-        JavaOutput(lineSeparator, kotlinInput, KDocCommentsHelper(lineSeparator, options.maxWidth))
+        JavaOutput(
+            lineSeparator,
+            kotlinInput,
+            KDocCommentsHelper(lineSeparator, options.maxWidth, reformatKDoc = !options.optofmt),
+        )
     val builder = OpsBuilder(kotlinInput, javaOutput)
-    KmpAstVisitor(options, builder, code).visitFile(tree)
+    KmpAstVisitor(options, com.facebook.ktfmt.format.layout.GjfSink(builder), code).visitFile(tree)
     builder.sync(kotlinInput.text.length)
     builder.drain()
     val ops = builder.build()

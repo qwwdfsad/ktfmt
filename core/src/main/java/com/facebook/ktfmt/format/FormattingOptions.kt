@@ -85,6 +85,15 @@ data class FormattingOptions(
      * decisions
      */
     val debuggingPrintOpsAfterFormatting: Boolean = false,
+
+    /**
+     * Enables the prototype `optofmt` layout rules (see kotlin-format/RULES.md). Off by default so
+     * the existing meta/google/kotlinlang profiles are unaffected. When on, ktfmt formats with the
+     * gjf-free native engine ([com.facebook.ktfmt.format.layout.NativeEngine]) and applies the
+     * optofmt rules (e.g. the §1 "don't wrap what fits" objective). This is the only flag that
+     * selects the native engine.
+     */
+    val optofmt: Boolean = false,
 ) {
   companion object {
     const val DEFAULT_MAX_WIDTH: Int = 100
@@ -150,6 +159,7 @@ data class FormattingOptions(
           .removeUnusedImports(removeUnusedImports)
           .preserveLambdaBreaks(preserveLambdaBreaks)
           .debuggingPrintOpsAfterFormatting(debuggingPrintOpsAfterFormatting)
+          .optofmt(optofmt)
 
   /**
    * A fluent builder for [FormattingOptions].
@@ -177,6 +187,7 @@ data class FormattingOptions(
     private var removeUnusedImports: Boolean = true
     private var preserveLambdaBreaks: Boolean = true
     private var debuggingPrintOpsAfterFormatting: Boolean = false
+    private var optofmt: Boolean = false
 
     /** @see FormattingOptions.maxWidth */
     fun maxWidth(maxWidth: Int): Builder = apply { this.maxWidth = maxWidth }
@@ -210,6 +221,9 @@ data class FormattingOptions(
           this.debuggingPrintOpsAfterFormatting = debuggingPrintOpsAfterFormatting
         }
 
+    /** @see FormattingOptions.optofmt */
+    fun optofmt(optofmt: Boolean): Builder = apply { this.optofmt = optofmt }
+
     /** Builds a new [FormattingOptions] from the current builder state. */
     fun build(): FormattingOptions =
         FormattingOptions(
@@ -220,6 +234,7 @@ data class FormattingOptions(
             removeUnusedImports = removeUnusedImports,
             preserveLambdaBreaks = preserveLambdaBreaks,
             debuggingPrintOpsAfterFormatting = debuggingPrintOpsAfterFormatting,
+            optofmt = optofmt,
         )
   }
 }
