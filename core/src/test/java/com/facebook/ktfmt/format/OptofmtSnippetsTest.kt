@@ -233,6 +233,53 @@ class OptofmtSnippetsTest {
 }""",
       )
 
+  /**
+   * §5/§7: a two-part chain `receiver.method(soleObjectArg)` whose receiver is itself a call attaches
+   * `.method(` to the receiver and hugs the block argument, exactly like the trailing-lambda form
+   * (`foo().apply { … }`) — it does NOT break `.method` onto its own line. From kotlinx.coroutines
+   * reactive Await.kt:197 (`injectCoroutineContext(cont.context).subscribe(object : Subscriber<T> { … })`).
+   * Written on ONE source line to prove the attach is not author-preservation.
+   */
+  @Test
+  fun `chain-final-call-with-block-arg-attaches-to-call-receiver`() =
+      check(
+          input =
+              """fun f() {
+    injectCoroutineContext(cont.context).subscribe(object : Subscriber<T> { override fun onSubscribe(sub: Subscription) { subscription = sub } })
+}""",
+          expected =
+              """fun f() {
+    injectCoroutineContext(cont.context).subscribe(object : Subscriber<T> {
+        override fun onSubscribe(sub: Subscription) {
+            subscription = sub
+        }
+    })
+}""",
+      )
+
+  /**
+   * Boundary companion to [chain-final-call-with-block-arg-attaches-to-call-receiver]: when attaching
+   * would overflow the opener line, `.method` falls back to its own line (§7) — §1 decides by cost, so
+   * the attach is offered only when it fits.
+   */
+  @Test
+  fun `chain-final-call-with-block-arg-breaks-when-opener-overflows`() =
+      check(
+          input =
+              """fun f() {
+    injectSomeVeryLongCoroutineContextHelperName(cont.context, extraParameter).subscribe(object : Subscriber<T> { override fun onSubscribe(sub: Subscription) { subscription = sub } })
+}""",
+          expected =
+              """fun f() {
+    injectSomeVeryLongCoroutineContextHelperName(cont.context, extraParameter)
+        .subscribe(object : Subscriber<T> {
+            override fun onSubscribe(sub: Subscription) {
+                subscription = sub
+            }
+        })
+}""",
+      )
+
   @Test
   fun `indent-economy`() =
       check(

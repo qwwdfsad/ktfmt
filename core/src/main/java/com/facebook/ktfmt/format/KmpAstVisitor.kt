@@ -2497,6 +2497,32 @@ internal class KmpAstVisitor(
         parts.last().isLambdaPart()
   }
 
+  /**
+   * §5/§7: true when [call] is a `CALL_EXPRESSION` with NO trailing lambda whose sole unnamed argument
+   * is itself block-like — a bare lambda (`register({ … })`), an `object` expression
+   * (`subscribe(object : X { … })`), a scoping/chain trailing-lambda call, or a base-call-with-sole-tail
+   * — i.e. an argument that hugs the call's `(` opener ([visitValueArgumentListInternal]). Such a call,
+   * as the sole tail of a two-part chain, attaches to its receiver-through-first-call and hugs, exactly
+   * like a trailing-lambda tail (`foo().apply { … }`). A call carrying a trailing lambda is excluded —
+   * that is the [isBaseCallWithSoleTrailingLambdaTail] / sole-trailing-lambda path.
+   */
+  private fun callHugsSoleBlockArg(call: KmpNode): Boolean {
+    if (call.type != KtNodeTypes.CALL_EXPRESSION) return false
+    if (call.meaningfulChildren().any { it.type == KtNodeTypes.LAMBDA_ARGUMENT }) return false
+    val argList = call.child(KtNodeTypes.VALUE_ARGUMENT_LIST) ?: return false
+    val sole =
+        argList
+            .meaningfulChildren()
+            .filter { it.type == KtNodeTypes.VALUE_ARGUMENT }
+            .singleOrNull()
+            ?.takeIf { it.child(KtNodeTypes.VALUE_ARGUMENT_NAME) == null }
+            ?.argumentExpression() ?: return false
+    return sole.type == KtNodeTypes.LAMBDA_EXPRESSION ||
+        sole.type == KtNodeTypes.OBJECT_LITERAL ||
+        isBaseCallWithSoleTrailingLambdaTail(sole) ||
+        isLambdaOrScopingFunction(sole)
+  }
+
   /** True when [args]'s final argument is an unnamed lambda and there is at least one arg before
    * it — the shape optofmt §4 expands in place. */
   private fun isLastArgUnnamedLambda(args: List<KmpNode>): Boolean {
@@ -3129,8 +3155,22 @@ internal class KmpAstVisitor(
     // first call (`v.mapValues { … }.filterValues { … }`, base = a *reference*), not a base call, so the
     // tail drops onto its own line and the base body drifts a level. Route it through the attach/broken
     // candidate path, which renders the receiver's body at one indent and lets §1 attach the tail.
+    // §5/§7: a two-part chain `receiver.method(soleBlockArg)` whose final call carries a sole block-body
+    // argument that hugs its opener (`injectCoroutineContext(ctx).subscribe(object : Subscriber<T> {`,
+    // `makeContext(x).register({ … })`). This is the paren-argument analogue of the trailing-lambda case
+    // (`foo().apply { … }`) and should format the same way: ATTACH the `.method(` to the receiver and hug
+    // the block when the opener fits, only breaking `.method` onto its own line when it overflows.
+    // Without this the general path below treats the call-receiver's first `.call` as a subsequent chain
+    // call and always breaks it. `emitChainWithHangableTrailingLambda`'s two-part branch is generic over
+    // the trailing block (lambda OR block-body arg), so route through it.
+    val soleBlockArgTail =
+        options.optofmt &&
+            parts.size == 2 &&
+            parts[0].type != KtNodeTypes.OBJECT_LITERAL &&
+            parts[0].type != KtNodeTypes.LAMBDA_EXPRESSION &&
+            parts.last().qualifiedSelector()?.let { callHugsSoleBlockArg(it) } == true
     if (options.optofmt &&
-        (soleTrailingLambda || isBaseCallWithSoleTrailingLambdaTail(expression))) {
+        (soleTrailingLambda || isBaseCallWithSoleTrailingLambdaTail(expression) || soleBlockArgTail)) {
       emitChainWithHangableTrailingLambda(
           parts, forceBroken, breakReceiverOff, breakBeforeFirstCall)
       return
@@ -3174,12 +3214,14 @@ internal class KmpAstVisitor(
   }
 
   /**
-   * §1/§7: emit a chain whose last part is a sole trailing lambda as two candidates — HANG (preamble
-   * flat, lambda body one indent below the chain line) vs. BROKEN (chain wraps per §7, the trailing
-   * `.call {` on its own line, body one indent below it) — and let §1 pick by line count. The hang
-   * candidate wraps its preamble in [NFlat] so it is only viable while the whole chain fits on one
-   * line; a wrapping chain makes it overflow and §1 falls to the broken candidate. This replaces the
-   * old `useBlockLikeLambdaStyle`/`parts.size==2` heuristics with a single principled choice.
+   * §1/§5/§7: emit a chain whose last part carries a block body — a sole trailing lambda
+   * (`recv.…run { … }`) OR a call with a sole block-body ARGUMENT that hugs its opener
+   * (`recv.subscribe(object : … { … })`, routed here via [callHugsSoleBlockArg]) — as competing
+   * candidates and let §1 pick by line count. A two-part / all-grouped chain offers ATTACH (the tail
+   * hugs the receiver-through-first-call) vs. BROKEN (the tail `.call` on its own line, §7). A genuine
+   * multi-call chain (only reachable with a trailing lambda) offers HANG (preamble flat via [NFlat], so
+   * viable only while the whole chain fits one line) vs. BROKEN. This replaces the old
+   * `useBlockLikeLambdaStyle`/`parts.size==2` heuristics with a single principled choice.
    *
    * §7 author preservation: when [forceBroken] (the source broke the chain across lines) only the
    * BROKEN staircase is emitted — the HANG/ATTACH candidate is skipped so the author's multi-line chain
@@ -3199,35 +3241,26 @@ internal class KmpAstVisitor(
             useBlockLikeLambdaStyle = false,
             suppressReceiverGrouping = breakReceiverOff,
             breakBeforeFirstCall = breakBeforeFirstCall)
-    val trailingSelector = parts.last().qualifiedSelector()
-    val lambda =
-        trailingSelector?.meaningfulChildren()?.firstOrNull { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
-    if (lambda == null) {
-      // Defensive: not the expected shape; fall back to the plain broken layout.
-      block(expressionBreakIndent) {
-        emitChainParts(
-            parts, groupingInfos, -1, genSym(), useBlockLikeLambdaStyle = false,
-            skipLastLambdaBody = false, forceBreaks = false)
-      }
-      return
-    }
     val baseType = parts.firstOrNull()?.type
     val baseIsBlockBodied =
         baseType == KtNodeTypes.OBJECT_LITERAL || baseType == KtNodeTypes.LAMBDA_EXPRESSION
 
-    // §7: when the trailing lambda call is the atomic receiver-through-first-call — the lambda applies
-    // DIRECTLY to the receiver (`merge(args).collect { … }`, `Foo(a, b).apply { … }`, `foo.let { … }`
-    // — a two-part chain), OR the receiver is a leading property run ending in the first call
-    // (`context.generator.generateFile(args) { … }` — every part grouped, no staircase) — offer ATTACH
-    // vs BROKEN and let §1 pick by line count. The receiver run (`head`) and the trailing `.call { … }`
-    // (`tail`) are captured separately, so each source token is consumed exactly once (capturing the
-    // same tokens twice would desync the comment/token cursor). Splitting here keeps the lambda body one
-    // indent below the chain line; the general multi-call path below wraps the whole chain in a
-    // continuation block, which would push a grouped-first-call lambda body one indent too deep. A
-    // block-bodied base (`object … {}.also {}`) is not "on the line", so its `.call` correctly drops
-    // below the `}` — handled by the general path below. Grouped intermediate parts are guaranteed
-    // non-call (a call only ever ends the grouped receiver-through-first-call prefix), so `head` needs
-    // no call/break handling.
+    // §7: when the trailing block-body call is the atomic receiver-through-first-call — the block
+    // applies DIRECTLY to the receiver (`merge(args).collect { … }`, `Foo(a, b).apply { … }`,
+    // `foo.let { … }` — a two-part chain), OR the receiver is a leading property run ending in the first
+    // call (`context.generator.generateFile(args) { … }` — every part grouped, no staircase) — offer
+    // ATTACH vs BROKEN and let §1 pick by line count. The block is either a trailing lambda (`.apply {`)
+    // or a sole block-body ARGUMENT that hugs its call opener (`.subscribe(object : … {`,
+    // `.register({ … })`) — this branch is generic over both (it never touches the trailing lambda), so
+    // `foo().subscribe(object { … })` attaches its `.subscribe` exactly like `foo().apply { … }` does,
+    // rather than the general path breaking the `.call` off. The receiver run (`head`) and the trailing
+    // `.call` (`tail`) are captured separately, so each source token is consumed exactly once (capturing
+    // the same tokens twice would desync the comment/token cursor). Splitting here keeps the block body
+    // one indent below the chain line; the general multi-call path below wraps the whole chain in a
+    // continuation block, which would push a grouped-first-call body one indent too deep. A block-bodied
+    // base (`object … {}.also {}`) is not "on the line", so its `.call` correctly drops below the `}` —
+    // handled by the general path below. Grouped intermediate parts are guaranteed non-call (a call only
+    // ever ends the grouped receiver-through-first-call prefix), so `head` needs no call/break handling.
     if (options.optofmt &&
         !baseIsBlockBodied &&
         (parts.size == 2 ||
@@ -3269,6 +3302,21 @@ internal class KmpAstVisitor(
         sink.appendSubtree(if (forceSoleArgChainAttach && !forceBroken) attach else broken)
       } else {
         sink.emitAlt(listOf(attach, broken))
+      }
+      return
+    }
+
+    // Below here needs the trailing LAMBDA (the multi-call HANG path). A chain that reached this helper
+    // WITHOUT a trailing lambda (a block-body-argument tail that didn't match the 2-part shape above)
+    // has no lambda to hang, so fall back to the plain §7 broken layout.
+    val trailingSelector = parts.last().qualifiedSelector()
+    val lambda =
+        trailingSelector?.meaningfulChildren()?.firstOrNull { it.type == KtNodeTypes.LAMBDA_ARGUMENT }
+    if (lambda == null) {
+      block(expressionBreakIndent) {
+        emitChainParts(
+            parts, groupingInfos, -1, genSym(), useBlockLikeLambdaStyle = false,
+            skipLastLambdaBody = false, forceBreaks = false)
       }
       return
     }
