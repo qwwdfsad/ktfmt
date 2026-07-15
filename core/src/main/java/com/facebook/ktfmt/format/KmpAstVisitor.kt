@@ -2851,10 +2851,14 @@ internal class KmpAstVisitor(
         builder.blankLineWanted(BlankLineWanted.NO)
         if (options.optofmt) {
           // The native engine interleaves comments from the source cursor: a same-line comment was
-          // already emitted inline right after `{`, and any remaining ones flush here (body-indented)
-          // via the sync. Emitting them explicitly (the gjf path below) would DUPLICATE them, since
-          // the cursor emits them too — and the duplication compounds every reformat.
-          val rbrace = bodyBlock?.children()?.lastOrNull { it.type == KtTokens.RBRACE }
+          // already emitted inline right after `{`/`->`, and any remaining ones flush here (body-
+          // indented) via the sync. Emitting them explicitly (the gjf path below) would DUPLICATE them,
+          // since the cursor emits them too — and the duplication compounds every reformat. §8: this
+          // reindents the comment to the body level (the sync flushes it INSIDE `block(bodyIndent)`).
+          // The closing `}` is a child of the FUNCTION_LITERAL, not the body BLOCK — read it from there,
+          // else the sync target is null and the comment falls through to the `}` token flush one level
+          // too shallow (at the brace indent).
+          val rbrace = functionLiteral.children().lastOrNull { it.type == KtTokens.RBRACE }
           if (rbrace != null) builder.sync(rbrace.startOffset)
         } else {
           blockComments.forEachIndexed { i, c ->

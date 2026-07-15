@@ -44,6 +44,33 @@ class OptofmtSnippetsTest {
     assertThat(format(once)).isEqualTo(once)
   }
 
+  /**
+   * §8: optofmt owns comment indentation. A comment-only lambda body reindents its comment to the body
+   * level (one indent past the `{`), like any block. The closing `}` of a lambda is a child of the
+   * FUNCTION_LITERAL rather than of the body BLOCK, so the sync that flushes the comment inside the body
+   * level must read `}` from the function literal — otherwise the comment fell through to the `}` token
+   * flush and rendered one level too shallow (at the brace indent). From kotlinx.coroutines
+   * BlockingCoroutineDispatcherTest.kt:69 (`launch(dispatcher) { // Do nothing, just complete }`).
+   */
+  @Test
+  fun `comment-only-lambda-body-indents-comment-to-body-level`() =
+      check(
+          input =
+              """fun t() = runBlocking {
+    val cpuTask = launch(dispatcher) {
+    // Do nothing, just complete
+    }
+    cpuTask.join()
+}""",
+          expected =
+              """fun t() = runBlocking {
+    val cpuTask = launch(dispatcher) {
+        // Do nothing, just complete
+    }
+    cpuTask.join()
+}""",
+      )
+
   @Test
   fun `boolean-condition`() =
       check(
