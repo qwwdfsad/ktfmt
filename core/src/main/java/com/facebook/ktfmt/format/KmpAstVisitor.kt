@@ -676,6 +676,30 @@ internal class KmpAstVisitor(
   }
 
   /**
+   * §1/§7: a multi-call chain whose grouped receiver-through-first-call ends in a call carrying a
+   * MULTILINE trailing lambda, followed by at least one further `.call`/`.property` tail
+   * (`comments.selectForSlug(s) { … }.executeAsList()`). [emitChainParts] renders such a mid-chain
+   * grouped lambda's body/closing `}` at an indent RELATIVE to the chain's continuation block (via
+   * [expressionBreakNegativeIndent], which cancels the block's one level so the `}` aligns with the
+   * receiver line). That block-relative math is calibrated for a chain that sits on its OWN line (a
+   * statement, or an attached introducer RHS), where the block is one level DEEPER than the receiver
+   * line. As a BROKEN introducer RHS the chain's continuation block sits AT the receiver line's column
+   * (the introducer break moved the open column but not the level), so the negative cancel over-
+   * corrects and the lambda body/`}` land one level too shallow. [emitIntroducerRhs] compensates by
+   * wrapping this shape's broken candidate in an extra indent level so the block lands one level deeper
+   * again — restoring the statement-like relationship the baked negative indent expects.
+   */
+  private fun chainFirstCallHasMultilineTrailingLambda(node: KmpNode?): Boolean {
+    if (!options.optofmt || !isCallChain(node) || isSoleTrailingLambdaChain(node)) return false
+    val parts = breakIntoParts(node!!)
+    val firstCall = firstCallPartIndex(parts)
+    // Need the first call to be a grouped mid-chain link (not the last part) so a tail follows it.
+    if (firstCall < 1 || firstCall >= parts.size - 1) return false
+    val part = parts[firstCall]
+    return partHasTrailingLambda(part) && partLambdaRendersMultiline(part)
+  }
+
+  /**
    * optofmt §1/§3: emit an introducer's right-hand side ([rhsExpr], built by [buildRhs]) as two
    * competing candidate layouts and let the optimizer keep the lower-§1-cost one. Used for every
    * `= rhs` / `name = rhs` introducer (property init, assignment, expression body, named argument):
@@ -779,6 +803,21 @@ internal class KmpAstVisitor(
             // block whose base is the break column (like a non-chain call) so the sole call's args land
             // at +2 instead of colliding with the opener at +1. Keep the cheaper chain-introducer break
             // so an OUTER introducer (`=`, or the infix `to`'s enclosing `=`) still stays attached.
+            block(expressionBreakIndent) {
+              sink.forcedChainIntroducerBreak(ZERO)
+              sink.appendRhsBodySubtree(rhs)
+            }
+          } else if (chainFirstCallHasMultilineTrailingLambda(rhsExpr)) {
+            // §1/§7: a chain whose grouped receiver-through-first-call carries a MULTILINE trailing
+            // lambda with a tail after it (`comments.selectForSlug(s) { … }.executeAsList()`). The
+            // chain renders its mid-chain grouped lambda's body/`}` relative to its own continuation
+            // block (a baked [expressionBreakNegativeIndent]); that math needs the block one level
+            // DEEPER than the receiver line. A plain chain-introducer break moves the open column to
+            // this indent but leaves the level shallow, so the lambda body/`}` land a level too shallow
+            // (see [chainFirstCallHasMultilineTrailingLambda]). Wrap in a real indent level and break to
+            // ZERO inside: the receiver line sits at this level while the chain's own block lands one
+            // deeper, restoring the statement-like relationship. Subsequent `.call`s then wrap at that
+            // one deeper level, matching the lambda's `}`.
             block(expressionBreakIndent) {
               sink.forcedChainIntroducerBreak(ZERO)
               sink.appendRhsBodySubtree(rhs)
@@ -2829,10 +2868,33 @@ internal class KmpAstVisitor(
               it.type != KtTokens.SEMICOLON
         }
     if (statements.size != 1) return statements.isNotEmpty()
+    // A single-statement body renders multiline when the author already broke it (source newline/
+    // semicolon) OR when the lambda `{ params -> stmt }` is simply too wide to fit on one line and so
+    // MUST wrap regardless of how it was written. The width test is whitespace- and trailing-comma-
+    // invariant (see [normalizedFlatWidth]), so both hold identically across passes — without it, a
+    // wide single statement written on one line in the source (`{ … -> Comment(a, b, …) }`) was
+    // classified single-line on pass 1 (tail staircased) then multiline on pass 2 (tail hugged),
+    // a source-dependent non-idempotency.
     return functionLiteral.descendants().any {
       (it.type in KtTokens.WHITESPACES && it.text.contains('\n')) || it.type == KtTokens.SEMICOLON
-    }
+    } || normalizedFlatWidth(functionLiteral) > options.maxWidth
   }
+
+  /**
+   * A whitespace- and trailing-comma-invariant approximation of [node]'s single-line (flat) width:
+   * source whitespace runs collapse to a single space and trailing commas before a closer are dropped
+   * (the formatter adds neither until it wraps, and neither changes the flat width that decides whether
+   * it wraps). Because it ignores exactly the two things reformatting changes, it yields the SAME value
+   * on every pass — so any layout decision keyed on it is idempotent. Used as a coarse "will this wrap"
+   * test where the true layout width (which depends on the start column) is not yet known.
+   */
+  private fun normalizedFlatWidth(node: KmpNode): Int =
+      node.text
+          .toString()
+          .replace(Regex("\\s+"), " ")
+          .trim()
+          .replace(Regex(",\\s*([)\\]}])"), "$1")
+          .length
 
   /**
    * §5/§7: true when `parts[index]` is a lambda-free `.call()`/`.property` tail (`.toList()`, `.size`,

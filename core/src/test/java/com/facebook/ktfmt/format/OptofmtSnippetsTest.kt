@@ -2219,4 +2219,75 @@ fun testNoneShortCircuit() = runTest {
               """public suspend fun <T> Flow.Publisher<T>.awaitFirstOrNull(): T = FlowAdapters.toPublisher(this)
     .awaitFirstOrNull()""",
       )
+
+  /**
+   * §1/§7: an expression body `= receiver.call(args) { … }.tail()` that must break after `=`, where
+   * the receiver-through-first-call carries a MULTILINE trailing lambda and a lambda-free tail hugs
+   * its closing `}`. The chain sits at a single indent (`comments.selectForSlug` on the break line),
+   * the lambda body hangs ONE level below it, its `}` returns to the chain line, and `.executeAsList()`
+   * hugs that `}`. Regression: as a broken introducer RHS the chain's continuation block sat AT the
+   * receiver-line column (the introducer break moved the open column but not the level), so the mid-
+   * chain grouped lambda's body/`}` — positioned by a block-relative negative indent calibrated for a
+   * statement-shaped chain one level deeper — landed a level too shallow (body at the receiver column,
+   * `}` at column 0). Fixed by wrapping this shape's broken candidate in a real indent level (see
+   * [KmpAstVisitor.chainFirstCallHasMultilineTrailingLambda]).
+   */
+  @Test
+  fun `broken-eq-chain-mid-lambda-tail-hugs-and-indents-body`() =
+      check(
+          input =
+              """fun findCommentsForSlug(slug: Slug): List<Comment> =
+    comments.selectForSlug(slug) { commentId, body, createdAt, updatedAt, username, bio, image ->
+        Comment(
+            commentId,
+            createdAt,
+            updatedAt,
+            body,
+            author = Profile(username.value, bio, image, following = false),
+        )
+    }.executeAsList()""",
+          expected =
+              """fun findCommentsForSlug(slug: Slug): List<Comment> =
+    comments.selectForSlug(slug) { commentId, body, createdAt, updatedAt, username, bio, image ->
+        Comment(
+            commentId,
+            createdAt,
+            updatedAt,
+            body,
+            author = Profile(username.value, bio, image, following = false),
+        )
+    }.executeAsList()""",
+      )
+
+  /**
+   * §5/§7 idempotency: the SAME chain as [broken-eq-chain-mid-lambda-tail-hugs-and-indents-body] but
+   * with the grouped lambda's single body statement written on ONE line in the SOURCE. The lambda-free
+   * tail `.executeAsList()` must still hug the lambda's closing `}` (`}.executeAsList()`), so the
+   * output is a fixpoint — reformatting the tail-on-its-own-line rendering (which a naive layout would
+   * produce first) converges immediately. Regression: [KmpAstVisitor.partLambdaRendersMultiline]
+   * judged a single-statement body multiline ONLY from source newlines, so a body written on one line
+   * (but too wide to fit) was classed single-line — the tail staircased onto its own line, then the
+   * next pass (now multiline in source) hugged it. Fixed by also treating a body whose flat width
+   * exceeds the column limit as multiline (a whitespace-invariant test, so both passes agree).
+   */
+  @Test
+  fun `broken-eq-chain-mid-lambda-tail-hugs-when-body-source-single-line`() =
+      check(
+          input =
+              "fun findCommentsForSlug(slug: Slug): List<Comment> = comments.selectForSlug(slug) " +
+                  "{ commentId, body, createdAt, updatedAt, username, bio, image -> " +
+                  "Comment(commentId, createdAt, updatedAt, body, " +
+                  "author = Profile(username.value, bio, image, following = false)) }.executeAsList()",
+          expected =
+              """fun findCommentsForSlug(slug: Slug): List<Comment> =
+    comments.selectForSlug(slug) { commentId, body, createdAt, updatedAt, username, bio, image ->
+        Comment(
+            commentId,
+            createdAt,
+            updatedAt,
+            body,
+            author = Profile(username.value, bio, image, following = false),
+        )
+    }.executeAsList()""",
+      )
 }
